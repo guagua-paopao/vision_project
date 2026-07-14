@@ -1,0 +1,16 @@
+name: source-contract
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  qt-api-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate Qt and API workflow
+        run: python tools/qt_demo_contract_test.py

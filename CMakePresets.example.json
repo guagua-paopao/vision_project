@@ -1,0 +1,32 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows-release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/backend-Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "YOLO11_CUDA_ROOT": "$env{CUDA_PATH}",
+        "TENSORRT_ROOT": "$env{TENSORRT_ROOT}",
+        "OpenCV_DIR": "$env{OpenCV_DIR}",
+        "CMAKE_CUDA_ARCHITECTURES": "89"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

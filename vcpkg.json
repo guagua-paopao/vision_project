@@ -1,0 +1,12 @@
+{
+  "name": "four-stage-qt-demo",
+  "version-string": "1.0.0",
+  "dependencies": [
+    "crow",
+    "hiredis",
+    "nlohmann-json",
+    "spdlog",
+    "sqlite3",
+    "yaml-cpp"
+  ]
+}

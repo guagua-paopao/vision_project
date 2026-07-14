@@ -1,0 +1,223 @@
+server:
+  host: "127.0.0.1"
+  port: 8087
+  threads: 1
+  enable_sync_detect: false
+
+model:
+  type: "pose"
+  engine_path: "./engines/yolo11n-pose.engine"
+  labels_path: "./labels/pose_coco.txt"
+  gpu_id: 0
+  use_gpu_postprocess: false
+
+stream:
+  enabled: false
+  camera_profiles_path: "./config/cameras.yaml"
+
+capture:
+  backend: "ffmpeg"
+  open_timeout_ms: 5000
+  read_timeout_ms: 3000
+  stale_frame_timeout_ms: 5000
+  buffer_size: 1
+  transport: "tcp"
+  latest_frame_only: true
+  warmup_frames: 10
+  reconnect_max_attempts: 0
+  reconnect_initial_delay_ms: 500
+  reconnect_max_delay_ms: 10000
+  status_update_interval_ms: 1000
+  allow_backend_fallback: true
+
+people_flow:
+  enabled: true
+  camera_id: "entry_camera_01"
+  camera_profile: "entry_camera_01"
+  config_version: "entry-line-v3-security-demo"
+  output_dir: "./runtime/output/people_flow"
+  report_dir: "./reports/people_flow"
+  target_infer_fps: 10
+  snapshot_fps: 2
+  jpeg_quality: 90
+  initial_occupancy: 0
+  warmup_frames_after_reconnect: 10
+  active_ttl_seconds: 60
+  realtime_ttl_seconds: 10
+  session_ttl_seconds: 604800
+  stale_timeout_ms: 30000
+  admin_token_env: "YOLO11_PEOPLE_FLOW_ADMIN_TOKEN"
+  person:
+    class_id: 0
+    conf_high: 0.45
+    conf_low: 0.15
+    min_width_px: 20
+    min_height_px: 40
+    max_aspect_ratio: 4.0
+    anchor_point: "bottom_center"
+  tracker:
+    min_hits: 3
+    max_age_frames: 20
+    match_iou_threshold: 0.25
+    center_distance_gate_norm: 0.12
+    velocity_smoothing: 0.65
+    trail_length: 20
+    use_alpha_beta_filter: true
+    motion_alpha: 0.85
+    motion_beta: 0.05
+    max_prediction_ms: 1000
+  security:
+    enabled: true
+    mode: "demo"
+    draw_zones: true
+    draw_pose: true
+    draw_stage_panel: true
+    max_recent_events: 50
+    event_marker_hold_frames: 30
+    pose_match_iou_threshold: 0.10
+    pose_match_distance_norm: 0.15
+    temporal_motion_speed_px_s: 140.0
+    temporal_demo_label: "RAPID_MOTION_DEMO"
+    state_file_name: "security.json"
+    zones:
+      - zone_id: "restricted_demo"
+        name: "Restricted Demo Zone"
+        polygon_norm:
+          - [0.60, 0.18]
+          - [0.94, 0.18]
+          - [0.94, 0.92]
+          - [0.60, 0.92]
+        enter_confirm_frames: 3
+        exit_confirm_frames: 3
+        dwell_alarm_ms: 3000
+        cooldown_ms: 1000
+        max_missed_frames: 3
+        severity: 2
+    pose_actions:
+      min_keypoint_confidence: 0.35
+      confirm_frames: 3
+      release_frames: 3
+      cooldown_ms: 1000
+      fall_trunk_angle_deg: 55.0
+      fall_bbox_aspect_ratio: 1.05
+      crouch_knee_angle_deg: 125.0
+      running_speed_px_s: 180.0
+    temporal_action:
+      window_size: 8
+      min_samples: 4
+      confirm_windows: 2
+      release_windows: 2
+      cooldown_ms: 1500
+      start_threshold: 0.70
+      end_threshold: 0.35
+      severity: 3
+  counting:
+    line_id: "entrance_line_01"
+    line_a_norm: [0.25, 0.72]
+    line_b_norm: [0.76, 0.38]
+    transition_positive_to_negative: "IN"
+    hysteresis_px: 12
+    min_hits_for_count: 3
+    finite_segment_extension_norm: 0.08
+    rearm_distance_px: 24
+    rearm_frames: 3
+    min_crossing_interval_ms: 750
+    max_crossing_gap_ms: 1500
+  roi:
+    enabled: true
+    polygon_norm:
+      - [0.05, 0.15]
+      - [0.95, 0.15]
+      - [0.95, 0.95]
+      - [0.05, 0.95]
+  visualization:
+    enabled: true
+    draw_raw_person_detections: false
+    draw_accepted_high_detections: false
+    draw_accepted_low_detections: false
+    draw_rejected_detections: false
+    draw_rejection_reason: false
+    draw_tentative_tracks: false
+    draw_confirmed_tracks: true
+    draw_missed_tracks: false
+    draw_track_id: true
+    draw_track_stats: false
+    draw_velocity: false
+    draw_anchor_points: true
+    draw_trails: true
+    draw_roi: true
+    fill_roi: false
+    draw_counting_line: true
+    draw_line_endpoints: true
+    draw_hysteresis_band: false
+    draw_side_labels: false
+    draw_counter_state: false
+    draw_event_markers: true
+    draw_status_panel: true
+    draw_filter_statistics: false
+    draw_legend: false
+    compact_panel_auto: true
+    save_event_frames: false
+    event_marker_hold_frames: 20
+    save_debug_frame_json: false
+    box_thickness: 2
+    line_thickness: 2
+    trail_thickness: 2
+    font_scale: 0.55
+    ui_scale: 0.0
+  storage:
+    sqlite_path: "./runtime/data/people_flow.db"
+    writer_queue_capacity: 10000
+    writer_batch_size: 100
+    writer_flush_interval_ms: 500
+    sqlite_busy_timeout_ms: 5000
+    events_max_len: 10000
+    event_retention_days: 180
+    aggregate_retention_days: 730
+    evidence_on_crossing: false
+
+redis:
+  enabled: true
+  host: "127.0.0.1"
+  port: 6379
+  password: ""
+  db: 0
+  stream_key: "yolo:stream:people-flow"
+  consumer_group: "yolo11_people_flow_group"
+  consumer_name: "people_flow_worker_1"
+  block_ms: 500
+  ttl_seconds: 1800
+  task_ttl_seconds: 604800
+  stream_max_len: 10000
+  enable_pending_reclaim: true
+  pending_min_idle_ms: 60000
+  max_redis_used_memory_mb: 2048
+
+worker:
+  enabled: true
+  worker_num: 1
+  min_alive_workers: 1
+  consumer_name_prefix: "people_flow_worker_"
+  worker_group: "people_flow_pose_gpu0"
+  worker_kind: "people_flow"
+  task_kind: "live_people_flow"
+  stream_type: "long_running_stream"
+  max_concurrency: 1
+  heartbeat_enabled: true
+  heartbeat_interval_ms: 3000
+  heartbeat_ttl_seconds: 30
+
+logging:
+  enabled: true
+  log_dir: "./runtime/logs/people_flow/worker"
+  level: "info"
+  console: true
+  file: true
+  flush_interval_sec: 3
+  max_file_size_mb: 50
+  max_files: 5
+
+metrics:
+  enabled: true
+  recent_window_seconds: 60
+  ttl_seconds: 3600

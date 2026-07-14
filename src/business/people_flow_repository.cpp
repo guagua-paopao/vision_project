@@ -1,0 +1,596 @@
+#include "business/people_flow_repository.h"
+
+#include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <memory>
+#include <sstream>
+#include <thread>
+#include <utility>
+
+#include <sqlite3.h>
+
+namespace yolo11_server {
+
+    namespace {
+
+        struct SqliteCloser {
+            void operator()(sqlite3* db) const { if (db) sqlite3_close(db); }
+        };
+        struct StatementFinalizer {
+            void operator()(sqlite3_stmt* statement) const { if (statement) sqlite3_finalize(statement); }
+        };
+        using DbPtr = std::unique_ptr<sqlite3, SqliteCloser>;
+        using StatementPtr = std::unique_ptr<sqlite3_stmt, StatementFinalizer>;
+
+        const char* schemaSql() {
+            return R"SQL(
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+PRAGMA foreign_keys=ON;
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER PRIMARY KEY,
+  applied_time_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pf_sessions (
+  session_id TEXT PRIMARY KEY,
+  camera_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  start_time_ms INTEGER NOT NULL,
+  stop_time_ms INTEGER,
+  initial_occupancy INTEGER NOT NULL DEFAULT 0,
+  in_count INTEGER NOT NULL DEFAULT 0,
+  out_count INTEGER NOT NULL DEFAULT 0,
+  final_occupancy INTEGER NOT NULL DEFAULT 0,
+  config_version TEXT NOT NULL,
+  stop_reason TEXT,
+  error TEXT,
+  consistency_ok INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_pf_sessions_camera_start ON pf_sessions(camera_id, start_time_ms);
+CREATE TABLE IF NOT EXISTS pf_crossing_events (
+  event_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  camera_id TEXT NOT NULL,
+  line_id TEXT NOT NULL,
+  event_time_ms INTEGER NOT NULL,
+  direction TEXT NOT NULL CHECK(direction IN ('IN','OUT')),
+  track_id INTEGER NOT NULL,
+  confidence REAL,
+  point_x_norm REAL,
+  point_y_norm REAL,
+  evidence_path TEXT,
+  config_version TEXT NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES pf_sessions(session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pf_event_camera_time ON pf_crossing_events(camera_id, event_time_ms);
+CREATE INDEX IF NOT EXISTS idx_pf_event_session ON pf_crossing_events(session_id);
+CREATE TABLE IF NOT EXISTS pf_aggregates_minute (
+  camera_id TEXT NOT NULL,
+  bucket_start_ms INTEGER NOT NULL,
+  in_count INTEGER NOT NULL DEFAULT 0,
+  out_count INTEGER NOT NULL DEFAULT 0,
+  occupancy_end INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(camera_id, bucket_start_ms)
+);
+CREATE TABLE IF NOT EXISTS pf_calibration_audit (
+  audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  camera_id TEXT NOT NULL,
+  session_id TEXT,
+  before_occupancy INTEGER NOT NULL,
+  after_occupancy INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  operator_name TEXT NOT NULL,
+  timestamp_ms INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO schema_version(version, applied_time_ms)
+VALUES(1, CAST(strftime('%s','now') AS INTEGER) * 1000);
+)SQL";
+        }
+
+        bool execSql(sqlite3* db, const char* sql, std::string& error) {
+            char* message = nullptr;
+            const int result = sqlite3_exec(db, sql, nullptr, nullptr, &message);
+            if (result == SQLITE_OK) return true;
+            error = message ? message : sqlite3_errmsg(db);
+            if (message) sqlite3_free(message);
+            return false;
+        }
+
+        bool openDatabase(const PeopleFlowSection& config, DbPtr& db, std::string& error) {
+            sqlite3* raw = nullptr;
+            const int result = sqlite3_open_v2(
+                config.storage.sqlite_path.c_str(),
+                &raw,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+                nullptr
+            );
+            db.reset(raw);
+            if (result != SQLITE_OK || !db) {
+                error = raw ? sqlite3_errmsg(raw) : "sqlite3_open_v2 returned null";
+                return false;
+            }
+            sqlite3_busy_timeout(db.get(), config.storage.sqlite_busy_timeout_ms);
+            return true;
+        }
+
+        bool prepare(sqlite3* db, const char* sql, StatementPtr& statement, std::string& error) {
+            sqlite3_stmt* raw = nullptr;
+            if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
+                error = sqlite3_errmsg(db);
+                return false;
+            }
+            statement.reset(raw);
+            return true;
+        }
+
+        void bindText(sqlite3_stmt* statement, int index, const std::string& value) {
+            sqlite3_bind_text(statement, index, value.c_str(), static_cast<int>(value.size()), SQLITE_TRANSIENT);
+        }
+
+        std::string columnText(sqlite3_stmt* statement, int index) {
+            const unsigned char* value = sqlite3_column_text(statement, index);
+            return value ? reinterpret_cast<const char*>(value) : std::string{};
+        }
+
+    }  // namespace
+
+    PeopleFlowRepository::PeopleFlowRepository(const PeopleFlowSection& config)
+        : config_(config) {
+    }
+
+    PeopleFlowRepository::~PeopleFlowRepository() noexcept {
+        stop();
+    }
+
+    bool PeopleFlowRepository::start(bool enable_writer, std::string& error) {
+        if (started_.exchange(true)) return !degraded_.load();
+        writer_enabled_.store(enable_writer);
+        stop_requested_.store(false);
+        std::error_code fs_error;
+        const auto parent = std::filesystem::u8path(config_.storage.sqlite_path).parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent, fs_error);
+        const bool schema_ok = ensureSchema(error);
+        setError(schema_ok ? std::string{} : error, !schema_ok);
+        if (enable_writer) writer_thread_ = std::thread([this]() { writerLoop(); });
+        return schema_ok;
+    }
+
+    void PeopleFlowRepository::stop() noexcept {
+        stop_requested_.store(true);
+        queue_cv_.notify_all();
+        try {
+            if (writer_thread_.joinable()) writer_thread_.join();
+        }
+        catch (...) {
+        }
+        started_.store(false);
+    }
+
+    bool PeopleFlowRepository::enqueue(WriteTask task) {
+        if (!writer_enabled_.load()) return false;
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (queue_.size() >= static_cast<std::size_t>(config_.storage.writer_queue_capacity)) {
+            dropped_tasks_.fetch_add(1);
+            degraded_.store(true);
+            return false;
+        }
+        queue_.push_back(std::move(task));
+        queue_cv_.notify_one();
+        return true;
+    }
+
+    bool PeopleFlowRepository::enqueueSessionStart(const PeopleFlowSessionRecord& session) {
+        WriteTask task;
+        task.type = TaskType::SessionStart;
+        task.session = session;
+        return enqueue(std::move(task));
+    }
+
+    bool PeopleFlowRepository::enqueueEvent(const CrossingEvent& event) {
+        WriteTask task;
+        task.type = TaskType::Event;
+        task.event = event;
+        return enqueue(std::move(task));
+    }
+
+    bool PeopleFlowRepository::enqueueSessionFinish(const PeopleFlowSessionRecord& session) {
+        WriteTask task;
+        task.type = TaskType::SessionFinish;
+        task.session = session;
+        return enqueue(std::move(task));
+    }
+
+    bool PeopleFlowRepository::ensureSchema(std::string& error) const {
+        DbPtr db;
+        if (!openDatabase(config_, db, error)) return false;
+        return execSql(db.get(), schemaSql(), error);
+    }
+
+    bool PeopleFlowRepository::writeBatch(const std::vector<WriteTask>& batch, std::string& error) {
+        DbPtr db;
+        if (!openDatabase(config_, db, error) || !execSql(db.get(), schemaSql(), error)) return false;
+        if (!execSql(db.get(), "BEGIN IMMEDIATE TRANSACTION;", error)) return false;
+        bool success = true;
+        long long committed_written_events = 0;
+        long long committed_duplicate_events = 0;
+
+        for (const WriteTask& task : batch) {
+            if (task.type == TaskType::SessionStart) {
+                StatementPtr statement;
+                success = prepare(db.get(),
+                    "INSERT INTO pf_sessions(session_id,camera_id,status,start_time_ms,initial_occupancy,in_count,out_count,final_occupancy,config_version,stop_reason,error,consistency_ok) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT(session_id) DO UPDATE SET status=excluded.status,camera_id=excluded.camera_id,config_version=excluded.config_version;",
+                    statement, error);
+                if (success) {
+                    bindText(statement.get(), 1, task.session.session_id);
+                    bindText(statement.get(), 2, task.session.camera_id);
+                    bindText(statement.get(), 3, task.session.status);
+                    sqlite3_bind_int64(statement.get(), 4, task.session.start_time_ms);
+                    sqlite3_bind_int64(statement.get(), 5, task.session.initial_occupancy);
+                    sqlite3_bind_int64(statement.get(), 6, task.session.in_count);
+                    sqlite3_bind_int64(statement.get(), 7, task.session.out_count);
+                    sqlite3_bind_int64(statement.get(), 8, task.session.final_occupancy);
+                    bindText(statement.get(), 9, task.session.config_version);
+                    bindText(statement.get(), 10, task.session.stop_reason);
+                    bindText(statement.get(), 11, task.session.error);
+                    success = sqlite3_step(statement.get()) == SQLITE_DONE;
+                }
+            }
+            else if (task.type == TaskType::Event) {
+                StatementPtr statement;
+                success = prepare(db.get(),
+                    "INSERT OR IGNORE INTO pf_crossing_events(event_id,session_id,camera_id,line_id,event_time_ms,direction,track_id,confidence,point_x_norm,point_y_norm,evidence_path,config_version) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?);", statement, error);
+                if (success) {
+                    bindText(statement.get(), 1, task.event.event_id);
+                    bindText(statement.get(), 2, task.event.session_id);
+                    bindText(statement.get(), 3, task.event.camera_id);
+                    bindText(statement.get(), 4, task.event.line_id);
+                    sqlite3_bind_int64(statement.get(), 5, task.event.event_time_ms);
+                    bindText(statement.get(), 6, task.event.direction);
+                    sqlite3_bind_int64(statement.get(), 7, task.event.track_id);
+                    sqlite3_bind_double(statement.get(), 8, task.event.confidence);
+                    sqlite3_bind_double(statement.get(), 9, task.event.point_x_norm);
+                    sqlite3_bind_double(statement.get(), 10, task.event.point_y_norm);
+                    bindText(statement.get(), 11, task.event.evidence_path);
+                    bindText(statement.get(), 12, task.event.config_version);
+                    success = sqlite3_step(statement.get()) == SQLITE_DONE;
+                }
+                if (success && sqlite3_changes(db.get()) == 0) {
+                    ++committed_duplicate_events;
+                    continue;
+                }
+                if (success) {
+                    ++committed_written_events;
+                    StatementPtr update_session;
+                    success = prepare(db.get(),
+                        "UPDATE pf_sessions SET in_count=in_count+?, out_count=out_count+?, "
+                        "final_occupancy=MAX(0, initial_occupancy+in_count+?-out_count-?) WHERE session_id=?;",
+                        update_session, error);
+                    if (success) {
+                        const int in_delta = task.event.direction == "IN" ? 1 : 0;
+                        const int out_delta = task.event.direction == "OUT" ? 1 : 0;
+                        sqlite3_bind_int(update_session.get(), 1, in_delta);
+                        sqlite3_bind_int(update_session.get(), 2, out_delta);
+                        sqlite3_bind_int(update_session.get(), 3, in_delta);
+                        sqlite3_bind_int(update_session.get(), 4, out_delta);
+                        bindText(update_session.get(), 5, task.event.session_id);
+                        success = sqlite3_step(update_session.get()) == SQLITE_DONE;
+                    }
+                    StatementPtr aggregate;
+                    if (success) success = prepare(db.get(),
+                        "INSERT INTO pf_aggregates_minute(camera_id,bucket_start_ms,in_count,out_count,occupancy_end) "
+                        "VALUES(?,?,?,?,COALESCE((SELECT final_occupancy FROM pf_sessions WHERE session_id=?),0)) "
+                        "ON CONFLICT(camera_id,bucket_start_ms) DO UPDATE SET "
+                        "in_count=in_count+excluded.in_count,out_count=out_count+excluded.out_count,occupancy_end=excluded.occupancy_end;",
+                        aggregate, error);
+                    if (success) {
+                        const long long minute = (task.event.event_time_ms / 60000LL) * 60000LL;
+                        bindText(aggregate.get(), 1, task.event.camera_id);
+                        sqlite3_bind_int64(aggregate.get(), 2, minute);
+                        sqlite3_bind_int(aggregate.get(), 3, task.event.direction == "IN" ? 1 : 0);
+                        sqlite3_bind_int(aggregate.get(), 4, task.event.direction == "OUT" ? 1 : 0);
+                        bindText(aggregate.get(), 5, task.event.session_id);
+                        success = sqlite3_step(aggregate.get()) == SQLITE_DONE;
+                    }
+                }
+            }
+            else {
+                StatementPtr statement;
+                success = prepare(db.get(),
+                    "UPDATE pf_sessions SET status=?,stop_time_ms=?,in_count=?,out_count=?,final_occupancy=?,stop_reason=?,error=?,"
+                    "consistency_ok=CASE WHEN (SELECT COUNT(*) FROM pf_crossing_events WHERE session_id=?)=(?+?) THEN 1 ELSE 0 END WHERE session_id=?;",
+                    statement, error);
+                if (success) {
+                    bindText(statement.get(), 1, task.session.status);
+                    sqlite3_bind_int64(statement.get(), 2, task.session.stop_time_ms);
+                    sqlite3_bind_int64(statement.get(), 3, task.session.in_count);
+                    sqlite3_bind_int64(statement.get(), 4, task.session.out_count);
+                    sqlite3_bind_int64(statement.get(), 5, task.session.final_occupancy);
+                    bindText(statement.get(), 6, task.session.stop_reason);
+                    bindText(statement.get(), 7, task.session.error);
+                    bindText(statement.get(), 8, task.session.session_id);
+                    sqlite3_bind_int64(statement.get(), 9, task.session.in_count);
+                    sqlite3_bind_int64(statement.get(), 10, task.session.out_count);
+                    bindText(statement.get(), 11, task.session.session_id);
+                    success = sqlite3_step(statement.get()) == SQLITE_DONE;
+                }
+            }
+            if (!success) {
+                if (error.empty()) error = sqlite3_errmsg(db.get());
+                break;
+            }
+        }
+
+        if (success) success = execSql(db.get(), "COMMIT;", error);
+        else {
+            std::string ignored;
+            execSql(db.get(), "ROLLBACK;", ignored);
+        }
+        if (success) {
+            written_events_.fetch_add(committed_written_events);
+            duplicate_events_.fetch_add(committed_duplicate_events);
+        }
+        return success;
+    }
+
+    void PeopleFlowRepository::writerLoop() noexcept {
+        while (true) {
+            std::vector<WriteTask> batch;
+            {
+                std::unique_lock<std::mutex> lock(queue_mutex_);
+                queue_cv_.wait_for(lock, std::chrono::milliseconds(config_.storage.writer_flush_interval_ms), [&]() {
+                    return stop_requested_.load() || !queue_.empty();
+                });
+                while (!queue_.empty() && batch.size() < static_cast<std::size_t>(config_.storage.writer_batch_size)) {
+                    batch.push_back(std::move(queue_.front()));
+                    queue_.pop_front();
+                }
+                if (batch.empty() && stop_requested_.load()) break;
+            }
+            if (batch.empty()) continue;
+            std::string error;
+            if (writeBatch(batch, error)) {
+                setError("", false);
+                continue;
+            }
+            failed_batches_.fetch_add(1);
+            setError(error.empty() ? "SQLite batch write failed" : error, true);
+            if (stop_requested_.load()) break;
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex_);
+                const std::size_t capacity = static_cast<std::size_t>(config_.storage.writer_queue_capacity);
+                const std::size_t available = queue_.size() < capacity ? capacity - queue_.size() : 0;
+                const std::size_t keep = std::min(available, batch.size());
+                for (std::size_t index = keep; index > 0; --index) {
+                    queue_.push_front(std::move(batch[index - 1]));
+                }
+                if (keep < batch.size()) {
+                    dropped_tasks_.fetch_add(static_cast<long long>(batch.size() - keep));
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        }
+    }
+
+    bool PeopleFlowRepository::queryEvents(
+        const std::string& camera_id,
+        const std::string& direction,
+        long long from_ms,
+        long long to_ms,
+        int limit,
+        int offset,
+        std::vector<CrossingEvent>& events,
+        std::string& error
+    ) const {
+        events.clear();
+        DbPtr db;
+        if (!openDatabase(config_, db, error)) return false;
+        StatementPtr statement;
+        if (!prepare(db.get(),
+            "SELECT event_id,session_id,camera_id,line_id,event_time_ms,direction,track_id,confidence,point_x_norm,point_y_norm,evidence_path,config_version "
+            "FROM pf_crossing_events WHERE camera_id=? AND event_time_ms>=? AND event_time_ms<=? AND (?='' OR direction=?) "
+            "ORDER BY event_time_ms ASC LIMIT ? OFFSET ?;", statement, error)) return false;
+        bindText(statement.get(), 1, camera_id);
+        sqlite3_bind_int64(statement.get(), 2, from_ms);
+        sqlite3_bind_int64(statement.get(), 3, to_ms);
+        bindText(statement.get(), 4, direction);
+        bindText(statement.get(), 5, direction);
+        sqlite3_bind_int(statement.get(), 6, std::clamp(limit, 1, 1000));
+        sqlite3_bind_int(statement.get(), 7, std::max(0, offset));
+        int result = SQLITE_ROW;
+        while ((result = sqlite3_step(statement.get())) == SQLITE_ROW) {
+            CrossingEvent event;
+            event.event_id = columnText(statement.get(), 0);
+            event.session_id = columnText(statement.get(), 1);
+            event.camera_id = columnText(statement.get(), 2);
+            event.line_id = columnText(statement.get(), 3);
+            event.event_time_ms = sqlite3_column_int64(statement.get(), 4);
+            event.direction = columnText(statement.get(), 5);
+            event.track_id = sqlite3_column_int64(statement.get(), 6);
+            event.confidence = sqlite3_column_double(statement.get(), 7);
+            event.point_x_norm = sqlite3_column_double(statement.get(), 8);
+            event.point_y_norm = sqlite3_column_double(statement.get(), 9);
+            event.evidence_path = columnText(statement.get(), 10);
+            event.config_version = columnText(statement.get(), 11);
+            events.push_back(std::move(event));
+        }
+        if (result != SQLITE_DONE) {
+            error = sqlite3_errmsg(db.get());
+            return false;
+        }
+        return true;
+    }
+
+    bool PeopleFlowRepository::querySummary(
+        const std::string& camera_id,
+        long long from_ms,
+        long long to_ms,
+        const std::string& bucket,
+        std::vector<PeopleFlowSummaryBucket>& summary,
+        std::string& error
+    ) const {
+        summary.clear();
+        const long long bucket_ms = bucket == "day" ? 86400000LL : (bucket == "hour" ? 3600000LL : 60000LL);
+        DbPtr db;
+        if (!openDatabase(config_, db, error)) return false;
+        StatementPtr statement;
+        if (!prepare(db.get(),
+            "SELECT (bucket_start_ms/?)*?,SUM(in_count),SUM(out_count) FROM pf_aggregates_minute "
+            "WHERE camera_id=? AND bucket_start_ms>=? AND bucket_start_ms<=? GROUP BY 1 ORDER BY 1;",
+            statement, error)) return false;
+        sqlite3_bind_int64(statement.get(), 1, bucket_ms);
+        sqlite3_bind_int64(statement.get(), 2, bucket_ms);
+        bindText(statement.get(), 3, camera_id);
+        sqlite3_bind_int64(statement.get(), 4, from_ms);
+        sqlite3_bind_int64(statement.get(), 5, to_ms);
+        int result = SQLITE_ROW;
+        while ((result = sqlite3_step(statement.get())) == SQLITE_ROW) {
+            PeopleFlowSummaryBucket item;
+            item.bucket_start_ms = sqlite3_column_int64(statement.get(), 0);
+            item.in_count = sqlite3_column_int64(statement.get(), 1);
+            item.out_count = sqlite3_column_int64(statement.get(), 2);
+            item.net_count = item.in_count - item.out_count;
+            summary.push_back(item);
+        }
+        if (result != SQLITE_DONE) {
+            error = sqlite3_errmsg(db.get());
+            return false;
+        }
+        return true;
+    }
+
+    bool PeopleFlowRepository::getSession(
+        const std::string& session_id,
+        PeopleFlowSessionRecord& session,
+        bool& found,
+        std::string& error
+    ) const {
+        found = false;
+        DbPtr db;
+        if (!openDatabase(config_, db, error)) return false;
+        StatementPtr statement;
+        if (!prepare(db.get(),
+            "SELECT session_id,camera_id,status,start_time_ms,COALESCE(stop_time_ms,0),initial_occupancy,in_count,out_count,final_occupancy,config_version,COALESCE(stop_reason,''),COALESCE(error,''),consistency_ok "
+            "FROM pf_sessions WHERE session_id=?;", statement, error)) return false;
+        bindText(statement.get(), 1, session_id);
+        const int result = sqlite3_step(statement.get());
+        if (result == SQLITE_DONE) return true;
+        if (result != SQLITE_ROW) {
+            error = sqlite3_errmsg(db.get());
+            return false;
+        }
+        found = true;
+        session.session_id = columnText(statement.get(), 0);
+        session.camera_id = columnText(statement.get(), 1);
+        session.status = columnText(statement.get(), 2);
+        session.start_time_ms = sqlite3_column_int64(statement.get(), 3);
+        session.stop_time_ms = sqlite3_column_int64(statement.get(), 4);
+        session.initial_occupancy = sqlite3_column_int64(statement.get(), 5);
+        session.in_count = sqlite3_column_int64(statement.get(), 6);
+        session.out_count = sqlite3_column_int64(statement.get(), 7);
+        session.final_occupancy = sqlite3_column_int64(statement.get(), 8);
+        session.config_version = columnText(statement.get(), 9);
+        session.stop_reason = columnText(statement.get(), 10);
+        session.error = columnText(statement.get(), 11);
+        session.consistency_ok = sqlite3_column_int(statement.get(), 12) != 0;
+        return true;
+    }
+
+    bool PeopleFlowRepository::writeCalibration(const PeopleFlowCalibrationRecord& record, std::string& error) const {
+        DbPtr db;
+        if (!openDatabase(config_, db, error) || !execSql(db.get(), schemaSql(), error)) return false;
+        StatementPtr statement;
+        if (!prepare(db.get(),
+            "INSERT INTO pf_calibration_audit(camera_id,session_id,before_occupancy,after_occupancy,reason,operator_name,timestamp_ms) VALUES(?,?,?,?,?,?,?);",
+            statement, error)) return false;
+        bindText(statement.get(), 1, record.camera_id);
+        bindText(statement.get(), 2, record.session_id);
+        sqlite3_bind_int64(statement.get(), 3, record.before_occupancy);
+        sqlite3_bind_int64(statement.get(), 4, record.after_occupancy);
+        bindText(statement.get(), 5, record.reason);
+        bindText(statement.get(), 6, record.operator_name);
+        sqlite3_bind_int64(statement.get(), 7, record.timestamp_ms);
+        if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+            error = sqlite3_errmsg(db.get());
+            return false;
+        }
+        return true;
+    }
+
+    bool PeopleFlowRepository::finalizeSessionSync(
+        const PeopleFlowSessionRecord& session,
+        std::string& error
+    ) const {
+        DbPtr db;
+        if (!openDatabase(config_, db, error) || !execSql(db.get(), schemaSql(), error)) return false;
+        StatementPtr statement;
+        if (!prepare(db.get(),
+            "INSERT INTO pf_sessions(session_id,camera_id,status,start_time_ms,stop_time_ms,initial_occupancy,in_count,out_count,final_occupancy,config_version,stop_reason,error,consistency_ok) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,CASE WHEN (?+?)=(SELECT COUNT(*) FROM pf_crossing_events WHERE session_id=?) THEN 1 ELSE 0 END) "
+            "ON CONFLICT(session_id) DO UPDATE SET status=excluded.status,stop_time_ms=excluded.stop_time_ms,"
+            "in_count=excluded.in_count,out_count=excluded.out_count,final_occupancy=excluded.final_occupancy,"
+            "stop_reason=excluded.stop_reason,error=excluded.error,consistency_ok=excluded.consistency_ok;",
+            statement, error)) return false;
+        bindText(statement.get(), 1, session.session_id);
+        bindText(statement.get(), 2, session.camera_id);
+        bindText(statement.get(), 3, session.status);
+        sqlite3_bind_int64(statement.get(), 4, session.start_time_ms);
+        sqlite3_bind_int64(statement.get(), 5, session.stop_time_ms);
+        sqlite3_bind_int64(statement.get(), 6, session.initial_occupancy);
+        sqlite3_bind_int64(statement.get(), 7, session.in_count);
+        sqlite3_bind_int64(statement.get(), 8, session.out_count);
+        sqlite3_bind_int64(statement.get(), 9, session.final_occupancy);
+        bindText(statement.get(), 10, session.config_version);
+        bindText(statement.get(), 11, session.stop_reason);
+        bindText(statement.get(), 12, session.error);
+        sqlite3_bind_int64(statement.get(), 13, session.in_count);
+        sqlite3_bind_int64(statement.get(), 14, session.out_count);
+        bindText(statement.get(), 15, session.session_id);
+        if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+            error = sqlite3_errmsg(db.get());
+            return false;
+        }
+        return true;
+    }
+
+    bool PeopleFlowRepository::cleanupRetention(long long now_ms, std::string& error) const {
+        DbPtr db;
+        if (!openDatabase(config_, db, error)) return false;
+        const long long event_before = now_ms - static_cast<long long>(config_.storage.event_retention_days) * 86400000LL;
+        const long long aggregate_before = now_ms - static_cast<long long>(config_.storage.aggregate_retention_days) * 86400000LL;
+        std::ostringstream sql;
+        sql << "BEGIN;DELETE FROM pf_crossing_events WHERE event_time_ms<" << event_before
+            << ";DELETE FROM pf_aggregates_minute WHERE bucket_start_ms<" << aggregate_before << ";COMMIT;";
+        return execSql(db.get(), sql.str().c_str(), error);
+    }
+
+    PeopleFlowRepositoryHealth PeopleFlowRepository::health() const {
+        PeopleFlowRepositoryHealth result;
+        result.started = started_.load();
+        result.writer_enabled = writer_enabled_.load();
+        result.degraded = degraded_.load();
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            result.queue_depth = queue_.size();
+        }
+        result.queue_capacity = config_.storage.writer_queue_capacity;
+        result.written_events = written_events_.load();
+        result.duplicate_events = duplicate_events_.load();
+        result.failed_batches = failed_batches_.load();
+        result.dropped_tasks = dropped_tasks_.load();
+        {
+            std::lock_guard<std::mutex> lock(error_mutex_);
+            result.last_error = last_error_;
+        }
+        return result;
+    }
+
+    void PeopleFlowRepository::setError(const std::string& error, bool degraded) {
+        degraded_.store(degraded);
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        last_error_ = error;
+    }
+
+}  // namespace yolo11_server

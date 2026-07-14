@@ -1,0 +1,30 @@
+# Local builds and runtime state
+/out/
+/build/
+/runtime/
+/reports/
+/.docker-temp/
+
+# IDE/user-specific files
+/.vs/
+/.vscode/
+/CMakeUserPresets.json
+/CMakeSettings.json
+*.user
+*.suo
+
+# Logs, databases and secrets
+*.log
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# OS files
+Thumbs.db
+.DS_Store
