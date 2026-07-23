@@ -2,7 +2,7 @@
 
 这是从完整视觉项目中提取的可独立构建小型仓库，保留一条完整链路：
 
-`Qt/API → HTTP Server → Redis Streams → four_stage_worker → 共享 RTSP FrameHub → 每摄像头 Pipeline → 固定推理池 → 告警/outbox`
+`Qt/API → HTTP Server → Redis Streams → four_stage_worker → 共享 RTSP FrameHub → 每摄像头 Pipeline → 固定推理池 → 告警/outbox → HTTP 回调`
 
 项目面向学习和完整流程体验，不以正式生产上线为目标。
 
@@ -15,6 +15,7 @@
 - 同一 Profile 的 People Flow 和多个摄像头抽帧线程共享一次 FFmpeg 解码；
 - 每个活动摄像头一条 Pipeline 线程，使用固定 W 个模型 runner 的推理池，不随摄像头数量增长；
 - 每摄像头有状态算法分析，告警与 callback outbox 在同一个 PostgreSQL 事务落库；
+- HMAC-SHA256 告警回调、租约接管、指数退避、最大重试与 dead-letter；
 - 通过稳定 `camera_id` 完成摄像头 CRUD；新增/修改/删除分别启动、替换、关闭抽帧线程；
 - 内部抽帧 Run、latest/archive/both、保留清理与只读 Hub 诊断，不暴露抽帧任务 CRUD；
 - `/camera-admin` Web 管理端、只读 Camera Profile 与共享 Hub 可视化；
@@ -39,6 +40,7 @@ Camera 抽帧功能文档：
 - [M11 Camera ID + PostgreSQL 设计](docs/CAMERA_INSTANCE_POSTGRESQL_DESIGN.md)
 - [算法服务 P0–P6 实施索引](docs/development/ALGORITHM_SERVICE_IMPLEMENTATION_INDEX.md)
 - [P3 固定推理工作池验收](docs/development/ALGORITHM_SERVICE_P3_INFERENCE_POOL.md)
+- [P4 可靠告警回调验收](docs/development/ALGORITHM_SERVICE_P4_ALERT_CALLBACK.md)
 
 ## 目录
 

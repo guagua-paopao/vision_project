@@ -20,6 +20,7 @@ struct CameraTaskHttpHealth {
     bool storage_ok = false;
     bool output_root_writable = false;
     bool worker_num_valid = false;
+    bool callback_config_valid = false;
 };
 
 class CameraTaskHttpController final {

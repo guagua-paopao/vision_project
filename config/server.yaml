@@ -95,6 +95,23 @@ analysis:
     - "pose_action"
     - "temporal_action"
 
+callbacks:
+  enabled: false
+  poll_interval_ms: 250
+  request_timeout_ms: 5000
+  lease_timeout_ms: 30000
+  max_attempts: 8
+  initial_backoff_ms: 1000
+  max_backoff_ms: 300000
+  request_body_limit_bytes: 1048576
+  response_body_limit_bytes: 4096
+  profiles:
+    backend_primary:
+      enabled: true
+      url_env: "YOLO11_CALLBACK_BACKEND_PRIMARY_URL"
+      hmac_secret_env: "YOLO11_CALLBACK_BACKEND_PRIMARY_SECRET"
+      allow_insecure_http: false
+
 people_flow:
   enabled: true
   camera_id: "entry_camera_01"

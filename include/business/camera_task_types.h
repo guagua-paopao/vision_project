@@ -113,6 +113,18 @@ struct SecurityAlertEventRecord {
     long long created_at_ms = 0;
 };
 
+struct CallbackOutboxRecord {
+    long long outbox_id = 0;
+    std::string event_id;
+    std::string callback_profile;
+    std::string status;
+    int attempt = 0;
+    long long next_attempt_at_ms = 0;
+    long long last_attempt_at_ms = 0;
+    long long created_at_ms = 0;
+    long long updated_at_ms = 0;
+};
+
 struct CameraIdempotencyRecord {
     std::string operation_scope;
     std::string idempotency_key;

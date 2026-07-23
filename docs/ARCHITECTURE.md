@@ -24,6 +24,8 @@ flowchart LR
     M --> IW
     IW --> AP["Per-camera algorithm sessions"]
     AP -->|"alert + outbox, one transaction"| DB
+    DB -->|"SKIP LOCKED claim + fenced lease"| CB["Callback delivery worker"]
+    CB -->|"HMAC-signed HTTP POST, at least once"| BE["External backend"]
     PF --> H
     CF --> DB
     DB --> H
@@ -109,8 +111,15 @@ and reparse points and deletes individual files only.
 
 Stateful tracking, counting, fence, pose, and temporal rules execute after the
 fixed inference pool. When a callback profile is present, the durable alert and
-its pending outbox record commit in one PostgreSQL transaction. HTTP delivery
-and retry are the following P4 stage.
+its pending outbox record commit in one PostgreSQL transaction.
+
+The callback worker claims due outbox rows with `FOR UPDATE SKIP LOCKED`,
+increments an attempt fencing token, and stores a lease deadline in
+`next_attempt_at_ms`. Any 2xx completes delivery. Transport errors, timeout,
+408, 429, and 5xx use bounded exponential retry; other 4xx and exhausted
+attempts enter dead letter. Expired `delivering` leases are reclaimed after a
+worker crash. Redirects are disabled, HTTP is forbidden unless explicitly
+allowed for a test profile, and only a SHA-256 response-body hash is persisted.
 
 ## Four stages
 

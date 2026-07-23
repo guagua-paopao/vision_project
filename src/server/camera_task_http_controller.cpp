@@ -185,7 +185,8 @@ bool safeServiceIdentifier(const std::string& value, std::size_t maximum, bool a
 
 bool validTaskDefinition(
     const CameraTaskDefinition& task,
-    const AnalysisSection& analysis_config
+    const AnalysisSection& analysis_config,
+    const CallbackDeliverySection& callback_config
 ) {
     std::size_t name_length = 0;
     if (!(utf8Length(task.name, name_length) && name_length >= 1 && name_length <= 128 &&
@@ -203,6 +204,14 @@ bool validTaskDefinition(
         (!task.analysis_enabled || (analysis_config.enabled && !task.algorithms.empty())) &&
         task.algorithms.size() <= 32)) {
         return false;
+    }
+    if (!task.callback_profile.empty()) {
+        const auto callback = callback_config.profiles.find(task.callback_profile);
+        if (!callback_config.enabled || !callback_config.config_error.empty() ||
+            callback == callback_config.profiles.end() ||
+            !callback->second.enabled) {
+            return false;
+        }
     }
     const std::set<std::string> supported(
         analysis_config.supported_algorithms.begin(),
@@ -527,6 +536,13 @@ CameraTaskHttpHealth CameraTaskHttpController::health() const {
     result.token_configured = !token_.empty();
     result.output_root_writable = output_root_writable_;
     result.worker_num_valid = config_.worker.worker_num == 1;
+    result.callback_config_valid =
+        (!config_.callbacks.enabled && config_.callbacks.config_error.empty()) ||
+        (config_.callbacks.enabled && config_.callbacks.config_error.empty() &&
+            std::any_of(
+                config_.callbacks.profiles.begin(),
+                config_.callbacks.profiles.end(),
+                [](const auto& entry) { return entry.second.enabled; }));
     if (repository_) {
         std::vector<CameraTaskDefinition> ignored;
         std::string error;
@@ -662,7 +678,7 @@ crow::response CameraTaskHttpController::createTask(const crow::request& request
     }
     if (!profile_found) return errorResponse(400, "CAMERA_PROFILE_NOT_FOUND", request_id);
     if (!resolved_profile.enabled) return errorResponse(409, "CAMERA_PROFILE_DISABLED", request_id);
-    if (!validTaskDefinition(task, config_.analysis)) {
+    if (!validTaskDefinition(task, config_.analysis, config_.callbacks)) {
         return errorResponse(400, "INVALID_TASK_CONFIG", request_id);
     }
     task.version = 1;
@@ -889,7 +905,7 @@ crow::response CameraTaskHttpController::updateTask(
     if (patch.algorithms) candidate.algorithms = *patch.algorithms;
     if (patch.callback_profile) candidate.callback_profile = *patch.callback_profile;
     candidate.enabled = candidate.desired_state == "running";
-    if (!validTaskDefinition(candidate, config_.analysis)) {
+    if (!validTaskDefinition(candidate, config_.analysis, config_.callbacks)) {
         return errorResponse(400, "INVALID_TASK_CONFIG", request_id);
     }
     CameraTaskRunRecord active;

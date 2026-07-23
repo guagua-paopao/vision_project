@@ -23,7 +23,9 @@ $executables = @(
     "camera_task_repository_test.exe",
     "camera_frame_extraction_test.exe",
     "camera_storage_policy_test.exe",
-    "camera_task_http_contract_test.exe"
+    "camera_task_http_contract_test.exe",
+    "camera_algorithm_processor_test.exe",
+    "callback_delivery_worker_test.exe"
 )
 foreach ($name in $executables) {
     $testExe = Join-Path $buildPath $name
@@ -31,4 +33,4 @@ foreach ($name in $executables) {
     & $testExe
     if ($LASTEXITCODE -ne 0) { throw "PostgreSQL integration test failed: $name" }
 }
-Write-Host "PASS: PostgreSQL People Flow, Camera CRUD/lifecycle, extraction, storage, and HTTP contracts are valid." -ForegroundColor Green
+Write-Host "PASS: PostgreSQL People Flow, Camera CRUD/lifecycle, extraction, analysis, alert callback, storage, and HTTP contracts are valid." -ForegroundColor Green

@@ -119,6 +119,12 @@ int main() {
     config.camera_tasks.output_dir = pathUtf8(root / "output");
     config.stream.camera_profiles_path = pathUtf8(root / "cameras.yaml");
     config.worker.worker_num = 1;
+    config.callbacks.enabled = true;
+    CallbackProfileSection callback_profile;
+    callback_profile.enabled = true;
+    callback_profile.url_env = "TEST_CALLBACK_URL";
+    callback_profile.hmac_secret_env = "TEST_CALLBACK_SECRET";
+    config.callbacks.profiles["backend_primary"] = callback_profile;
 
     CameraProfile enabled;
     enabled.id = "entry_camera_01";
@@ -177,7 +183,8 @@ int main() {
     require(controller.initialize(error), "HTTP controller must initialize: " + error);
     const auto health = controller.health();
     require(health.initialized && health.token_configured && health.storage_ok &&
-            health.output_root_writable && health.worker_num_valid,
+            health.output_root_writable && health.worker_num_valid &&
+            health.callback_config_valid,
         "Camera API health prerequisites must be observable");
 
     auto response = controller.listProfiles(request());
@@ -208,6 +215,11 @@ int main() {
     require(response.code == 400 &&
             responseBody(response)["error_code"] == "INVALID_TASK_CONFIG",
         "algorithms outside the configured deployment allow-list must fail at the HTTP boundary");
+    response = controller.createTask(request(
+        R"({"camera_id":"unknown_callback","name":"unknown callback","camera_profile":"entry_camera_01","callback_profile":"not_deployed"})"));
+    require(response.code == 400 &&
+            responseBody(response)["error_code"] == "INVALID_TASK_CONFIG",
+        "callback profiles outside the deployment allow-list must fail at the HTTP boundary");
 
     const std::string camera_id = "entrance_extract_01";
     const std::string create_payload =
@@ -451,6 +463,22 @@ int main() {
         "invalid-worker controller initializes so readiness can expose the failure");
     require(!invalid_worker_controller.health().worker_num_valid,
         "worker_num greater than one must remain an explicit readiness failure");
+
+    AppConfig invalid_callback_config = config;
+    invalid_callback_config.callbacks.config_error =
+        "callbacks require at least one enabled profile";
+    invalid_callback_config.camera_tasks.output_dir =
+        pathUtf8(root / "invalid_callback" / "output");
+    auto invalid_callback_repository =
+        std::make_shared<CameraTaskRepository>(invalid_callback_config.camera_tasks);
+    CameraTaskHttpController invalid_callback_controller(
+        invalid_callback_config,
+        invalid_callback_repository,
+        control,
+        "contract-secret");
+    require(invalid_callback_controller.initialize(error) &&
+            !invalid_callback_controller.health().callback_config_valid,
+        "invalid callback allow-list configuration must be an explicit readiness failure");
 
     std::error_code cleanup_error;
     std::filesystem::remove_all(root, cleanup_error);

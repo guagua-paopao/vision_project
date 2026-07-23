@@ -56,6 +56,8 @@ in the same request. The response is normally `202` with `camera_id`, internal
 `analysis.enabled=true` requires a safe `algorithm_profile` and at least one
 algorithm identifier. RTSP URLs and callback URLs are never accepted here:
 `camera_profile` and `callback_profile` resolve deployment-side configuration.
+Non-empty `callback_profile` is accepted only when callback delivery is enabled
+and that exact profile is present and enabled in the deployment allow-list.
 
 Create accepts `Idempotency-Key` (printable ASCII, at most 160 characters).
 Reusing the same key with the same normalized JSON replays the stored response
@@ -114,6 +116,33 @@ header is omitted. The status response exposes `desired_state`,
 return normalized event payload/evidence plus callback delivery state.
 Latest frame returns `image/jpeg`; archive-only
 cameras return `409`.
+
+## Alert callback contract
+
+When a task has a non-empty `callback_profile`, every durable alert is delivered
+at least once using `POST` to the profile endpoint. The callback body is the
+`alert_event.v1` JSON object without its query-only `delivery` member.
+
+Required headers:
+
+```http
+Content-Type: application/json
+Idempotency-Key: <event_id>
+X-Event-Id: <event_id>
+X-Timestamp: <Unix epoch milliseconds>
+X-Signature-Version: 1
+X-Signature: <lowercase HMAC-SHA256 hex>
+```
+
+The HMAC input is the decimal `X-Timestamp`, one LF byte, then the exact UTF-8
+request body. Receivers must deduplicate by `event_id` because a successful
+HTTP response can be lost before the service commits `delivered`.
+
+- Any 2xx: `delivered`.
+- Transport failure, timeout, 408, 429, or 5xx: exponential retry.
+- Other 4xx: `dead_letter`.
+- Retryable failure at `max_attempts`: `dead_letter`.
+- 3xx is not followed and is treated as an unexpected terminal status.
 
 ## Shared Hub diagnostics
 
