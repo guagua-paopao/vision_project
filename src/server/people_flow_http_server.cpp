@@ -42,6 +42,17 @@ bool safeIdentifier(const std::string& value) {
     });
 }
 
+bool constantTimeEqual(const std::string& left, const std::string& right) {
+    const std::size_t maximum = std::max(left.size(), right.size());
+    unsigned char difference = static_cast<unsigned char>(left.size() ^ right.size());
+    for (std::size_t index = 0; index < maximum; ++index) {
+        const unsigned char lhs = index < left.size() ? left[index] : 0;
+        const unsigned char rhs = index < right.size() ? right[index] : 0;
+        difference |= static_cast<unsigned char>(lhs ^ rhs);
+    }
+    return difference == 0;
+}
+
 std::string makeSessionId() {
     static std::mt19937_64 generator(std::random_device{}());
     std::ostringstream stream;
@@ -67,6 +78,8 @@ json sessionJson(const PeopleFlowSessionStatus& item) {
     body["stop_requested"] = item.stop_requested;
     body["capture"] = {
         {"state", item.capture_state}, {"backend", item.capture_backend},
+        {"shared_hub", item.shared_hub}, {"hub_instance_id", item.hub_instance_id},
+        {"hub_subscribers", item.hub_subscribers},
         {"capture_fps", item.capture_fps}, {"source_fps", item.source_fps},
         {"frame_count", item.frame_count}, {"dropped_frames", item.dropped_frames},
         {"latest_frame_age_ms", item.latest_frame_age_ms},
@@ -98,7 +111,11 @@ json sessionJson(const PeopleFlowSessionStatus& item) {
 }  // namespace
 
 PeopleFlowHttpServer::PeopleFlowHttpServer(const AppConfig& config)
-    : config_(config), redis_(config.redis) {}
+    : config_(config), redis_(config.redis) {
+    if (config_.camera_tasks.enabled) {
+        camera_task_controller_ = std::make_unique<CameraTaskHttpController>(config_);
+    }
+}
 
 PeopleFlowHttpServer::~PeopleFlowHttpServer() noexcept {
     if (repository_) repository_->stop();
@@ -110,21 +127,36 @@ bool PeopleFlowHttpServer::initialize(std::string& error) {
         return false;
     }
     if (!redis_.connect(error)) return false;
+    if (const char* token = std::getenv(config_.people_flow.admin_token_env.c_str())) {
+        admin_token_ = token;
+    }
     repository_ = std::make_unique<PeopleFlowRepository>(config_.people_flow);
     std::string storage_error;
     if (!repository_->start(false, storage_error)) {
-        spdlog::warn("SQLite query layer starts degraded: {}", storage_error);
+        spdlog::warn("PostgreSQL query layer starts degraded: {}", storage_error);
     }
+    if (camera_task_controller_ && !camera_task_controller_->initialize(error)) return false;
     return true;
 }
 
 void PeopleFlowHttpServer::registerRoutes(crow::SimpleApp& app) {
+    CROW_ROUTE(app, "/camera-admin")([this]() {
+        return adminAsset("index.html", "text/html; charset=utf-8");
+    });
+    CROW_ROUTE(app, "/camera-admin/app.js")([this]() {
+        return adminAsset("app.js", "application/javascript; charset=utf-8");
+    });
+    CROW_ROUTE(app, "/camera-admin/styles.css")([this]() {
+        return adminAsset("styles.css", "text/css; charset=utf-8");
+    });
     CROW_ROUTE(app, "/api/v1/health")([this]() { return health(); });
     CROW_ROUTE(app, "/api/v1/ready")([this]() { return ready(); });
     CROW_ROUTE(app, "/api/v1/people-flow/start").methods(crow::HTTPMethod::POST)(
         [this](const crow::request& request) { return start(request); });
     CROW_ROUTE(app, "/api/v1/people-flow/<string>/stop").methods(crow::HTTPMethod::POST)(
-        [this](const std::string& id) { return stop(id); });
+        [this](const crow::request& request, const std::string& id) {
+            return stop(request, id);
+        });
     CROW_ROUTE(app, "/api/v1/people-flow/<string>/status")(
         [this](const std::string& id) { return status(id); });
     CROW_ROUTE(app, "/api/v1/people-flow/<string>/snapshot")(
@@ -137,19 +169,58 @@ void PeopleFlowHttpServer::registerRoutes(crow::SimpleApp& app) {
         [this](const crow::request& request, const std::string& camera_id) {
             return events(request, camera_id);
         });
+    if (camera_task_controller_) camera_task_controller_->registerRoutes(app);
+}
+
+bool PeopleFlowHttpServer::authorized(const crow::request& request) const {
+    static const std::string prefix = "Bearer ";
+    const std::string header = request.get_header_value("Authorization");
+    if (admin_token_.empty() || header.rfind(prefix, 0) != 0) return false;
+    return constantTimeEqual(header.substr(prefix.size()), admin_token_);
+}
+
+crow::response PeopleFlowHttpServer::adminAsset(
+    const std::string& file_name,
+    const std::string& content_type
+) const {
+    std::string bytes;
+    const auto root = std::filesystem::absolute(
+        std::filesystem::u8path(config_.camera_tasks.admin_ui_dir));
+    if (!readFile(root / std::filesystem::u8path(file_name), bytes)) {
+        return crow::response(404, "Camera admin asset was not found");
+    }
+    crow::response response(200, std::move(bytes));
+    response.set_header("Content-Type", content_type);
+    response.set_header("Cache-Control", file_name == "index.html" ? "no-store" : "public, max-age=300");
+    response.set_header("X-Content-Type-Options", "nosniff");
+    response.set_header("Content-Security-Policy",
+        "default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'");
+    return response;
 }
 
 crow::response PeopleFlowHttpServer::health() const {
     std::string error;
     const bool redis_ok = redis_.ping(error);
     const auto storage = repository_ ? repository_->health() : PeopleFlowRepositoryHealth{};
-    return jsonResponse(redis_ok ? 200 : 503, {
-        {"success", redis_ok}, {"service", "four-stage-people-flow"},
+    const auto camera = camera_task_controller_
+        ? camera_task_controller_->health() : CameraTaskHttpHealth{};
+    const bool camera_ok = !camera.enabled ||
+        (camera.initialized && camera.storage_ok && camera.output_root_writable && camera.worker_num_valid);
+    const bool healthy = redis_ok && camera_ok;
+    return jsonResponse(healthy ? 200 : 503, {
+        {"success", healthy}, {"service", "four-stage-people-flow"},
         {"redis", {{"ok", redis_ok}, {"error", error}}},
         {"people_flow_enabled", config_.people_flow.enabled},
         {"people_flow_security_enabled", config_.people_flow.security.enabled},
         {"people_flow_security_mode", config_.people_flow.security.mode},
-        {"storage", {{"started", storage.started}, {"degraded", storage.degraded}}}
+        {"storage", {{"started", storage.started}, {"degraded", storage.degraded}}},
+        {"camera_tasks", {
+            {"enabled", camera.enabled}, {"initialized", camera.initialized},
+            {"storage_ok", camera.storage_ok},
+            {"output_root_writable", camera.output_root_writable},
+            {"token_configured", camera.token_configured},
+            {"worker_num_valid", camera.worker_num_valid}
+        }}
     });
 }
 
@@ -170,16 +241,35 @@ crow::response PeopleFlowHttpServer::ready() const {
             {"worker_group", worker.worker_group}, {"last_error", worker.last_error}
         });
     }
-    const bool is_ready = redis_ok && workers_ok && alive >= config_.worker.min_alive_workers;
+    const auto camera = camera_task_controller_
+        ? camera_task_controller_->health() : CameraTaskHttpHealth{};
+    bool camera_role_alive = !camera.enabled;
+    if (camera.enabled) {
+        for (const auto& worker : workers) {
+            if (worker.alive && worker.worker_kind == "vision_host" &&
+                worker.task_kind.find("camera_frame") != std::string::npos) {
+                camera_role_alive = true;
+                break;
+            }
+        }
+    }
+    const bool camera_ready = !camera.enabled ||
+        (camera.initialized && camera.token_configured && camera.storage_ok &&
+            camera.output_root_writable && camera.worker_num_valid && camera_role_alive);
+    const bool is_ready = redis_ok && workers_ok && alive >= config_.worker.min_alive_workers && camera_ready;
     return jsonResponse(is_ready ? 200 : 503, {
         {"success", is_ready}, {"ready", is_ready}, {"redis_ok", redis_ok},
         {"alive_workers", alive}, {"required_workers", config_.worker.min_alive_workers},
         {"worker_error", worker_error}, {"workers", worker_items},
-        {"security_enabled", config_.people_flow.security.enabled}
+        {"security_enabled", config_.people_flow.security.enabled},
+        {"camera_tasks_ready", camera_ready}, {"camera_frame_role_alive", camera_role_alive}
     });
 }
 
 crow::response PeopleFlowHttpServer::start(const crow::request& request) {
+    if (!authorized(request)) {
+        return jsonResponse(401, {{"success", false}, {"error_code", "UNAUTHORIZED"}});
+    }
     const auto max_bytes = static_cast<std::size_t>(std::max(1, config_.server.max_body_size_mb)) * 1024U * 1024U;
     if (request.body.size() > max_bytes) {
         return jsonResponse(413, {{"success", false}, {"error_code", "REQUEST_TOO_LARGE"}});
@@ -258,7 +348,13 @@ crow::response PeopleFlowHttpServer::start(const crow::request& request) {
     });
 }
 
-crow::response PeopleFlowHttpServer::stop(const std::string& session_id) const {
+crow::response PeopleFlowHttpServer::stop(
+    const crow::request& request,
+    const std::string& session_id
+) const {
+    if (!authorized(request)) {
+        return jsonResponse(401, {{"success", false}, {"error_code", "UNAUTHORIZED"}});
+    }
     if (!safeIdentifier(session_id) || session_id.rfind("pf_", 0) != 0) {
         return jsonResponse(400, {{"success", false}, {"error_code", "INVALID_SESSION_ID"}});
     }

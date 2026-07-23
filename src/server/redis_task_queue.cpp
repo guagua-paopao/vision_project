@@ -17,7 +17,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -1903,10 +1902,11 @@ namespace yolo11_server {
         const long long update_ms = status.last_update_ms > 0 ? status.last_update_ms : nowMs();
         std::lock_guard<std::mutex> lock(context_mutex_);
         RedisReplyPtr session_reply = commandWithReconnectLocked(config_, context_, error, 10000,
-            "HSET %s status %s camera_id %s camera_profile %s masked_uri %s config_version %s snapshot_path %s capture_state %s capture_backend %s worker_id %d consumer_name %s stop_requested %d storage_degraded %d snapshot_degraded %d resolution_changed %d create_time_ms %lld start_time_ms %lld stop_time_ms %lld last_update_ms %lld last_frame_time_ms %lld latest_frame_age_ms %lld frame_count %lld dropped_frames %lld event_queue_depth %lld in_count %lld out_count %lld occupancy %lld applied_calibration_version %lld live_persons %d reconnect_count %d width %d height %d capture_fps %.6f infer_fps %.6f source_fps %.6f last_inference_ms %.6f error %s last_error %s",
+            "HSET %s status %s camera_id %s camera_profile %s masked_uri %s config_version %s snapshot_path %s capture_state %s capture_backend %s shared_hub %d hub_instance_id %s hub_subscribers %d worker_id %d consumer_name %s stop_requested %d storage_degraded %d snapshot_degraded %d resolution_changed %d create_time_ms %lld start_time_ms %lld stop_time_ms %lld last_update_ms %lld last_frame_time_ms %lld latest_frame_age_ms %lld frame_count %lld dropped_frames %lld event_queue_depth %lld in_count %lld out_count %lld occupancy %lld applied_calibration_version %lld live_persons %d reconnect_count %d width %d height %d capture_fps %.6f infer_fps %.6f source_fps %.6f last_inference_ms %.6f error %s last_error %s",
             peopleFlowSessionKey(status.session_id).c_str(), status.status.c_str(), status.camera_id.c_str(),
             status.camera_profile.c_str(), status.masked_uri.c_str(), status.config_version.c_str(),
             status.snapshot_path.c_str(), status.capture_state.c_str(), status.capture_backend.c_str(),
+            status.shared_hub ? 1 : 0, status.hub_instance_id.c_str(), status.hub_subscribers,
             status.worker_id, status.consumer_name.c_str(), status.stop_requested ? 1 : 0,
             status.storage_degraded ? 1 : 0, status.snapshot_degraded ? 1 : 0,
             status.resolution_changed ? 1 : 0, status.create_time_ms, status.start_time_ms,
@@ -1920,12 +1920,14 @@ namespace yolo11_server {
         if (!expireKey(context_, peopleFlowSessionKey(status.session_id), std::max(60, session_ttl_seconds), error)) return false;
 
         RedisReplyPtr realtime_reply = commandWithReconnectLocked(config_, context_, error, 10000,
-            "HSET %s session_id %s camera_id %s status %s in_count %lld out_count %lld occupancy %lld applied_calibration_version %lld live_persons %d frame_count %lld capture_state %s capture_backend %s capture_fps %.6f infer_fps %.6f source_fps %.6f latest_frame_age_ms %lld reconnect_count %d dropped_frames %lld storage_degraded %d event_queue_depth %lld last_update_ms %lld config_version %s",
+            "HSET %s session_id %s camera_id %s status %s in_count %lld out_count %lld occupancy %lld applied_calibration_version %lld live_persons %d frame_count %lld capture_state %s capture_backend %s shared_hub %d hub_instance_id %s hub_subscribers %d capture_fps %.6f infer_fps %.6f source_fps %.6f latest_frame_age_ms %lld reconnect_count %d dropped_frames %lld storage_degraded %d event_queue_depth %lld last_update_ms %lld config_version %s",
             peopleFlowRealtimeKey(status.camera_id).c_str(), status.session_id.c_str(), status.camera_id.c_str(),
             status.status.c_str(), status.in_count, status.out_count, status.occupancy,
             status.applied_calibration_version, status.live_persons, status.frame_count,
             status.capture_state.c_str(),
-            status.capture_backend.c_str(), status.capture_fps, status.infer_fps, status.source_fps,
+            status.capture_backend.c_str(), status.shared_hub ? 1 : 0,
+            status.hub_instance_id.c_str(), status.hub_subscribers,
+            status.capture_fps, status.infer_fps, status.source_fps,
             status.latest_frame_age_ms, status.reconnect_count, status.dropped_frames,
             status.storage_degraded ? 1 : 0, status.event_queue_depth, update_ms,
             status.config_version.c_str());
@@ -1951,6 +1953,9 @@ namespace yolo11_server {
             status.snapshot_path = get("snapshot_path");
             status.capture_state = get("capture_state");
             status.capture_backend = get("capture_backend");
+            status.shared_hub = parseLongLong(get("shared_hub")) != 0;
+            status.hub_instance_id = get("hub_instance_id");
+            status.hub_subscribers = static_cast<int>(parseLongLong(get("hub_subscribers")));
             status.consumer_name = get("consumer_name");
             status.error = get("error");
             status.last_error = get("last_error");

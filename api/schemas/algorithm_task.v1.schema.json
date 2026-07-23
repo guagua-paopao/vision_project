@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vision-project.local/schemas/algorithm_task.v1.schema.json",
+  "title": "Algorithm Service Camera Task v1",
+  "description": "Long-running camera algorithm task accepted by POST /api/v1/cameras. RTSP URIs, credentials, callback URLs, and database connection strings are deliberately excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["camera_id", "name", "camera_profile"],
+  "properties": {
+    "camera_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,160}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "camera_profile": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,160}$"
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Compatibility alias. true requests desired_state=running; false requests desired_state=stopped."
+    },
+    "desired_state": {
+      "type": "string",
+      "enum": ["running", "stopped"],
+      "default": "running"
+    },
+    "frame_interval_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 3600000,
+      "default": 1000
+    },
+    "output_mode": {
+      "type": "string",
+      "enum": ["latest", "archive", "both"],
+      "default": "latest"
+    },
+    "jpeg_quality": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 90
+    },
+    "max_width": {
+      "$ref": "#/$defs/dimension"
+    },
+    "max_height": {
+      "$ref": "#/$defs/dimension"
+    },
+    "retention_days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3650,
+      "default": 7
+    },
+    "max_saved_frames": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000,
+      "default": 100000
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "target_infer_fps": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 120,
+          "default": 5
+        },
+        "algorithm_profile": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "algorithms": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,80}$"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"enabled": {"const": true}},
+            "required": ["enabled"]
+          },
+          "then": {
+            "required": ["target_infer_fps", "algorithm_profile", "algorithms"],
+            "properties": {
+              "algorithm_profile": {
+                "pattern": "^[A-Za-z0-9_.-]{1,160}$"
+              },
+              "algorithms": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "callback_profile": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,160}$",
+      "description": "Server-side allow-listed profile name; never a raw callback URL."
+    }
+  },
+  "$defs": {
+    "dimension": {
+      "oneOf": [
+        {"const": 0},
+        {"type": "integer", "minimum": 64, "maximum": 8192}
+      ],
+      "default": 0
+    }
+  }
+}

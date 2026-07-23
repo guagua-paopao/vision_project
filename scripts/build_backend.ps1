@@ -20,6 +20,9 @@ $CTestExe = Join-Path $VisualStudioRoot "Common7\IDE\CommonExtensions\Microsoft\
 $NinjaExe = Join-Path $VisualStudioRoot "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
 $Toolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
 $VcpkgExe = Join-Path $VcpkgRoot "vcpkg.exe"
+$OverlayTriplets = Join-Path $ProjectRoot "cmake\triplets"
+$InstalledDir = Join-Path $ProjectRoot "vcpkg_installed"
+$BuildTemp = Join-Path $ProjectRoot "out\tmp\msvc"
 
 function Import-VisualStudioEnvironment([string]$VsRoot) {
     $vcvars64 = Join-Path $VsRoot "VC\Auxiliary\Build\vcvars64.bat"
@@ -38,12 +41,16 @@ function Import-VisualStudioEnvironment([string]$VsRoot) {
 }
 
 Import-VisualStudioEnvironment $VisualStudioRoot
+New-Item -ItemType Directory -Force -Path $BuildTemp | Out-Null
+$env:TEMP = $BuildTemp
+$env:TMP = $BuildTemp
 foreach ($path in @($CMakeExe, $CTestExe, $NinjaExe, $Toolchain)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Required build tool not found: $path" }
 }
 if ($InstallDependencies) {
     if (-not (Test-Path -LiteralPath $VcpkgExe)) { throw "vcpkg.exe not found: $VcpkgExe" }
-    & $VcpkgExe install --triplet x64-windows --x-manifest-root=$ProjectRoot
+    & $VcpkgExe install --triplet x64-windows --overlay-triplets=$OverlayTriplets `
+        --x-manifest-root=$ProjectRoot
     if ($LASTEXITCODE -ne 0) { throw "vcpkg manifest install failed" }
 }
 New-Item -ItemType Directory -Force -Path $BuildPath | Out-Null
@@ -52,6 +59,8 @@ $configure = @(
     "-S", $ProjectRoot, "-B", $BuildPath, "-G", "Ninja",
     "-DCMAKE_MAKE_PROGRAM=$NinjaExe", "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_TOOLCHAIN_FILE=$Toolchain", "-DVCPKG_TARGET_TRIPLET=x64-windows",
+    "-DVCPKG_INSTALLED_DIR=$InstalledDir",
+    "-DVCPKG_OVERLAY_TRIPLETS=$OverlayTriplets",
     "-DVCPKG_MANIFEST_MODE=$(if($InstallDependencies){'ON'}else{'OFF'})",
     "-DYOLO11_CUDA_ROOT=$CudaRoot", "-DTENSORRT_ROOT=$TensorRtRoot",
     "-DOpenCV_DIR=$OpenCvDir", "-DCMAKE_CUDA_ARCHITECTURES=$CudaArchitectures"
@@ -62,7 +71,13 @@ if ($LASTEXITCODE -ne 0) { throw "Backend CMake configure failed" }
 
 $build = @("--build", $BuildPath, "--config", "Release", "--target",
     "four_stage_server", "four_stage_worker",
-    "people_flow_core_test", "security_analytics_test", "repository_test", "pose_engine_smoke")
+    "camera_task_redis",
+    "app_config_runtime_test", "people_flow_core_test", "security_analytics_test", "repository_test",
+    "shared_camera_frame_hub_test", "people_flow_hub_regression_test",
+    "camera_task_manager_test", "camera_task_repository_test",
+    "camera_frame_extraction_test", "camera_storage_policy_test", "camera_frame_resilience_test",
+    "camera_task_http_contract_test",
+    "pose_engine_smoke", "rtsp_capture_smoke", "pose_rtsp_interop_smoke")
 if ($CleanFirst) { $build += "--clean-first" }
 & $CMakeExe @build
 if ($LASTEXITCODE -ne 0) { throw "Backend build failed" }

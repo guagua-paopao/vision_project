@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>摄像头抽帧控制台</title>
+  <link rel="stylesheet" href="/camera-admin/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><p class="eyebrow">VISION CONTROL PLANE</p><h1>摄像头抽帧控制台</h1></div>
+    <div class="auth">
+      <label for="token">管理员 Token</label>
+      <input id="token" type="password" autocomplete="off" placeholder="仅保存在当前页面内存">
+      <button id="connect" class="primary">连接</button>
+      <span id="connection" class="badge neutral">未连接</span>
+    </div>
+  </header>
+
+  <main>
+    <section id="notice" class="notice hidden" aria-live="polite"></section>
+    <nav class="tabs" aria-label="管理模块">
+      <button data-tab="cameras" class="active">摄像头</button>
+      <button data-tab="profiles">可用 Profile</button>
+      <button data-tab="hubs">共享 Hub</button>
+      <button data-tab="operations">运行概览</button>
+    </nav>
+
+    <section id="cameras" class="panel tab-panel active">
+      <div class="panel-head">
+        <div><h2>摄像头实例</h2><p>以 camera_id 控制抽帧对象线程；新增自动启动，修改自动替换，删除自动停止并回收。</p></div>
+        <div class="actions"><button data-refresh="cameras">刷新</button><button id="new-camera" class="primary">新增摄像头</button></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>ID / 名称</th><th>Profile</th><th>周期</th><th>输出</th><th>线程状态</th><th>版本</th><th>操作</th></tr></thead><tbody id="camera-rows"></tbody></table></div>
+      <div id="camera-detail" class="detail empty">选择“状态”或“运行历史”查看抽帧线程数据。</div>
+    </section>
+
+    <section id="profiles" class="panel tab-panel">
+      <div class="panel-head"><div><h2>可用 Camera Profile</h2><p>Profile 只读并来自部署配置；页面不接收 RTSP URI、用户名或密码。</p></div><button data-refresh="profiles">刷新</button></div>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>显示名称</th><th>环境变量引用</th><th>传输</th><th>启用</th></tr></thead><tbody id="profile-rows"></tbody></table></div>
+    </section>
+
+    <section id="hubs" class="panel tab-panel">
+      <div class="panel-head"><div><h2>共享 FrameHub</h2><p>同一 Profile 的 People Flow 与多个摄像头抽帧线程共享一次 FFmpeg 解码。</p></div><button data-refresh="hubs">刷新</button></div>
+      <div id="hub-cards" class="cards"></div>
+    </section>
+
+    <section id="operations" class="panel tab-panel">
+      <div class="panel-head"><div><h2>运行概览</h2><p>健康、就绪、PostgreSQL 和抽帧运行指标。</p></div><button data-refresh="operations">刷新</button></div>
+      <div id="operations-content" class="cards"></div>
+    </section>
+  </main>
+
+  <dialog id="camera-dialog">
+    <form id="camera-form" method="dialog">
+      <div class="dialog-head"><h2 id="camera-dialog-title">新增摄像头</h2><button type="button" data-close="camera-dialog" aria-label="关闭">×</button></div>
+      <input id="camera-version" type="hidden">
+      <div class="form-grid">
+        <label>Camera ID<input id="camera-id" required maxlength="160" pattern="[A-Za-z0-9_-]+"></label>
+        <label>名称<input id="camera-name" required maxlength="128"></label>
+        <label>Camera Profile<select id="camera-profile" required></select></label>
+        <label>抽帧周期（毫秒）<input id="camera-interval" type="number" min="100" max="3600000" value="1000" required></label>
+        <label>输出模式<select id="camera-output"><option value="latest">latest</option><option value="archive">archive</option><option value="both">both</option></select></label>
+        <label>JPEG 质量<input id="camera-quality" type="number" min="1" max="100" value="90" required></label>
+        <label>最大宽度（0=不限）<input id="camera-width" type="number" min="0" max="8192" value="0" required></label>
+        <label>最大高度（0=不限）<input id="camera-height" type="number" min="0" max="8192" value="0" required></label>
+        <label>保留天数<input id="camera-retention" type="number" min="1" max="3650" value="7" required></label>
+        <label>最多归档帧<input id="camera-max-frames" type="number" min="1" max="1000000" value="100000" required></label>
+        <label class="check"><input id="camera-enabled" type="checkbox" checked>启用并运行抽帧线程</label>
+      </div>
+      <p class="warning">修改运行中的摄像头会停止并 join 旧抽帧线程，再以相同 camera_id 启动新 Run。</p>
+      <div class="dialog-actions"><button type="button" data-close="camera-dialog">取消</button><button type="submit" class="primary">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="frame-dialog" class="frame-dialog">
+    <div class="dialog-head"><h2>最新抽帧</h2><button type="button" data-close="frame-dialog" aria-label="关闭">×</button></div>
+    <img id="latest-frame" alt="摄像头最新抽帧">
+  </dialog>
+  <script src="/camera-admin/app.js" defer></script>
+</body>
+</html>

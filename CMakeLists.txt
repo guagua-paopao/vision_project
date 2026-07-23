@@ -11,6 +11,11 @@ endif()
 
 project(four_stage_qt_demo VERSION 1.0.0 LANGUAGES CXX CUDA)
 
+if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja" AND
+   CMAKE_CL_SHOWINCLUDES_PREFIX STREQUAL "娉ㄦ剰: 鍖呭惈鏂囦欢:  ")
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件:  ")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
@@ -45,8 +50,9 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(Crow CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
-find_package(unofficial-sqlite3 CONFIG REQUIRED)
+find_package(PostgreSQL REQUIRED)
 find_package(hiredis CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
 set(PROJECT_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/include")
@@ -94,18 +100,65 @@ add_library(security_analytics_core STATIC
 target_include_directories(security_analytics_core PUBLIC "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(security_analytics_core PUBLIC people_flow_vision)
 
+add_library(postgres_storage STATIC src/business/postgres_client.cpp)
+target_include_directories(postgres_storage PUBLIC "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(postgres_storage PUBLIC PostgreSQL::PostgreSQL)
+
 add_library(people_flow_storage STATIC src/business/people_flow_repository.cpp)
 target_include_directories(people_flow_storage PUBLIC "${PROJECT_INCLUDE_DIR}")
-target_link_libraries(people_flow_storage PUBLIC unofficial::sqlite3::sqlite3 Threads::Threads)
+target_link_libraries(people_flow_storage PUBLIC postgres_storage Threads::Threads)
+
+add_library(camera_task_storage STATIC src/business/camera_task_repository.cpp)
+target_include_directories(camera_task_storage PUBLIC "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(camera_task_storage PUBLIC postgres_storage nlohmann_json::nlohmann_json)
 
 add_library(app_support STATIC
     src/server/app_config.cpp
     src/server/app_logger.cpp
     src/server/camera_profile.cpp
+    src/server/camera_profile_registry.cpp
     src/server/uri_masker.cpp
 )
 target_include_directories(app_support PUBLIC "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(app_support PUBLIC yaml-cpp::yaml-cpp spdlog::spdlog)
+
+add_library(camera_capture_runtime STATIC
+    src/business/rtsp_capture_reader.cpp
+    src/business/ffmpeg_process_capture_reader.cpp
+    src/server/ffmpeg_open_coordinator.cpp
+    src/server/shared_camera_frame_hub.cpp
+    src/server/rtsp_camera_frame_source.cpp
+)
+target_include_directories(camera_capture_runtime PUBLIC "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(camera_capture_runtime PUBLIC app_support spdlog::spdlog ${OpenCV_LIBS} Threads::Threads)
+
+add_library(camera_task_scheduling STATIC src/server/camera_task_manager.cpp)
+target_include_directories(camera_task_scheduling PUBLIC "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(camera_task_scheduling PUBLIC spdlog::spdlog Threads::Threads)
+
+add_library(camera_task_redis STATIC src/server/camera_task_queue.cpp)
+target_include_directories(camera_task_redis PUBLIC "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(camera_task_redis PUBLIC camera_task_scheduling hiredis::hiredis nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(camera_task_redis PUBLIC ws2_32)
+endif()
+
+add_library(camera_task_runtime STATIC
+    src/business/frame_artifact_writer.cpp
+    src/business/camera_frame_retention.cpp
+    src/business/camera_pipeline.cpp
+    src/server/camera_task_runtime.cpp
+)
+target_include_directories(camera_task_runtime PUBLIC "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(camera_task_runtime PUBLIC
+    camera_capture_runtime camera_task_storage camera_task_redis
+    spdlog::spdlog ${OpenCV_LIBS} Threads::Threads)
+
+add_library(camera_task_http STATIC src/server/camera_task_http_controller.cpp)
+target_include_directories(camera_task_http PUBLIC "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(camera_task_http PUBLIC
+    app_support camera_task_storage camera_task_redis Crow::Crow
+    nlohmann_json::nlohmann_json OpenSSL::Crypto)
 
 add_library(people_flow_redis STATIC src/server/redis_task_queue.cpp)
 target_include_directories(people_flow_redis PUBLIC "${PROJECT_INCLUDE_DIR}")
@@ -120,19 +173,20 @@ add_executable(four_stage_server
 )
 target_include_directories(four_stage_server PRIVATE "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(four_stage_server PRIVATE
-    app_support people_flow_redis people_flow_storage
+    app_support camera_task_http people_flow_redis people_flow_storage
     Crow::Crow nlohmann_json::nlohmann_json spdlog::spdlog)
 
 add_executable(four_stage_worker
     src/server/main_people_flow_worker.cpp
     src/server/people_flow_inference_worker.cpp
+    src/server/people_flow_session_runner.cpp
+    src/server/vision_worker_host.cpp
     src/server/model_runner.cpp
-    src/business/rtsp_capture_reader.cpp
 )
 target_include_directories(four_stage_worker PRIVATE
     "${PROJECT_INCLUDE_DIR}" "${PROJECT_PLUGIN_DIR}" ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(four_stage_worker PRIVATE
-    app_support people_flow_redis people_flow_storage security_analytics_core pose_runtime myplugins
+    app_support camera_capture_runtime camera_task_runtime camera_task_scheduling people_flow_redis people_flow_storage security_analytics_core pose_runtime myplugins
     nlohmann_json::nlohmann_json spdlog::spdlog ${OpenCV_LIBS})
 add_dependencies(four_stage_worker myplugins)
 add_custom_command(TARGET four_stage_worker POST_BUILD
@@ -140,6 +194,13 @@ add_custom_command(TARGET four_stage_worker POST_BUILD
         $<TARGET_FILE:myplugins> $<TARGET_FILE_DIR:four_stage_worker>)
 
 enable_testing()
+add_executable(app_config_runtime_test tests/app_config_runtime_test.cpp)
+target_include_directories(app_config_runtime_test PRIVATE "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(app_config_runtime_test PRIVATE app_support camera_capture_runtime)
+add_test(NAME app_config_runtime_test COMMAND app_config_runtime_test
+    "${CMAKE_SOURCE_DIR}/config/server.yaml" "${CMAKE_SOURCE_DIR}/config/worker.yaml")
+set_tests_properties(app_config_runtime_test PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
 add_executable(people_flow_core_test tests/phase20_people_flow_test.cpp)
 target_include_directories(people_flow_core_test PRIVATE "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(people_flow_core_test PRIVATE people_flow_vision)
@@ -154,6 +215,52 @@ add_executable(repository_test tests/phase22_repository_test.cpp)
 target_include_directories(repository_test PRIVATE "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(repository_test PRIVATE people_flow_storage)
 add_test(NAME repository_test COMMAND repository_test)
+set_tests_properties(repository_test PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(shared_camera_frame_hub_test tests/shared_camera_frame_hub_test.cpp)
+target_include_directories(shared_camera_frame_hub_test PRIVATE "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(shared_camera_frame_hub_test PRIVATE camera_capture_runtime ${OpenCV_LIBS})
+add_test(NAME shared_camera_frame_hub_test COMMAND shared_camera_frame_hub_test)
+
+add_executable(people_flow_hub_regression_test tests/people_flow_hub_regression_test.cpp)
+target_include_directories(people_flow_hub_regression_test PRIVATE "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(people_flow_hub_regression_test PRIVATE camera_capture_runtime ${OpenCV_LIBS})
+add_test(NAME people_flow_hub_regression_test COMMAND people_flow_hub_regression_test)
+
+add_executable(camera_task_manager_test tests/camera_task_manager_test.cpp)
+target_include_directories(camera_task_manager_test PRIVATE "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(camera_task_manager_test PRIVATE camera_task_scheduling)
+add_test(NAME camera_task_manager_test COMMAND camera_task_manager_test)
+
+add_executable(camera_task_repository_test tests/camera_task_repository_test.cpp)
+target_include_directories(camera_task_repository_test PRIVATE "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(camera_task_repository_test PRIVATE camera_task_storage)
+add_test(NAME camera_task_repository_test COMMAND camera_task_repository_test)
+set_tests_properties(camera_task_repository_test PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(camera_frame_extraction_test tests/camera_frame_extraction_test.cpp)
+target_include_directories(camera_frame_extraction_test PRIVATE "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(camera_frame_extraction_test PRIVATE camera_task_runtime ${OpenCV_LIBS})
+add_test(NAME camera_frame_extraction_test COMMAND camera_frame_extraction_test)
+set_tests_properties(camera_frame_extraction_test PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(camera_storage_policy_test tests/camera_storage_policy_test.cpp)
+target_include_directories(camera_storage_policy_test PRIVATE "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(camera_storage_policy_test PRIVATE camera_task_runtime ${OpenCV_LIBS})
+add_test(NAME camera_storage_policy_test COMMAND camera_storage_policy_test)
+set_tests_properties(camera_storage_policy_test PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(camera_frame_resilience_test tests/camera_frame_resilience_test.cpp)
+target_include_directories(camera_frame_resilience_test PRIVATE "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(camera_frame_resilience_test PRIVATE camera_capture_runtime ${OpenCV_LIBS})
+add_test(NAME camera_frame_resilience_test COMMAND camera_frame_resilience_test)
+
+add_executable(camera_task_http_contract_test tests/camera_task_http_contract_test.cpp)
+target_include_directories(camera_task_http_contract_test PRIVATE "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(camera_task_http_contract_test PRIVATE
+    camera_task_http nlohmann_json::nlohmann_json)
+add_test(NAME camera_task_http_contract_test COMMAND camera_task_http_contract_test)
+set_tests_properties(camera_task_http_contract_test PROPERTIES SKIP_RETURN_CODE 77)
 
 # Hardware smoke target; intentionally not part of CTest so CI without an
 # NVIDIA GPU can still run all deterministic tests.
@@ -165,6 +272,25 @@ add_custom_command(TARGET pose_engine_smoke POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:myplugins> $<TARGET_FILE_DIR:pose_engine_smoke>)
 
+# Real-RTSP smoke target; intentionally not part of CTest because it requires
+# a reachable camera and its URI must be supplied through the configured env.
+add_executable(rtsp_capture_smoke tests/rtsp_capture_smoke.cpp)
+target_include_directories(rtsp_capture_smoke PRIVATE "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(rtsp_capture_smoke PRIVATE camera_capture_runtime ${OpenCV_LIBS})
+
+# Hardware interop smoke: keeps the production TensorRT pose engine alive while
+# the shared FrameHub opens and decodes RTSP.
+add_executable(pose_rtsp_interop_smoke tests/pose_rtsp_interop_smoke.cpp)
+target_include_directories(pose_rtsp_interop_smoke PRIVATE
+    "${PROJECT_INCLUDE_DIR}" "${PROJECT_PLUGIN_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(pose_rtsp_interop_smoke PRIVATE
+    app_support camera_capture_runtime pose_runtime myplugins ${OpenCV_LIBS})
+add_dependencies(pose_rtsp_interop_smoke myplugins)
+add_custom_command(TARGET pose_rtsp_interop_smoke POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:myplugins> $<TARGET_FILE_DIR:pose_rtsp_interop_smoke>)
+
 install(TARGETS four_stage_server four_stage_worker RUNTIME DESTINATION bin)
 install(FILES engines/yolo11n-pose.engine DESTINATION engines)
 install(FILES config/server.yaml config/worker.yaml config/cameras.yaml DESTINATION config)
+install(DIRECTORY web/camera-admin DESTINATION web)

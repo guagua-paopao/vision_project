@@ -12,6 +12,10 @@ namespace yolo11_server {
         std::string display_name;
         std::string transport = "tcp";
         bool enabled = true;
+        int version = 1;
+        long long created_at_ms = 0;
+        long long updated_at_ms = 0;
+        long long deleted_at_ms = 0;
     };
 
     std::map<std::string, CameraProfile> loadCameraProfilesFromYaml(

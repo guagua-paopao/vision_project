@@ -265,6 +265,9 @@ namespace yolo11_server {
         std::string snapshot_path;
         std::string capture_state;
         std::string capture_backend;
+        bool shared_hub = false;
+        std::string hub_instance_id;
+        int hub_subscribers = 0;
         std::string consumer_name;
         std::string error;
         std::string last_error;

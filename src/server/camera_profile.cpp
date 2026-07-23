@@ -7,6 +7,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "server/yaml_file_loader.h"
+
 namespace yolo11_server {
 
     namespace {
@@ -39,7 +41,7 @@ namespace yolo11_server {
         }
 
         try {
-            const YAML::Node root = YAML::LoadFile(yaml_path);
+            const YAML::Node root = loadYamlFileAbiSafe(yaml_path);
             const YAML::Node cameras = root["cameras"];
             if (!cameras || !cameras.IsMap()) {
                 error = "camera profile file must contain a cameras map";
@@ -55,6 +57,14 @@ namespace yolo11_server {
                 profile.display_name = readOrDefault<std::string>(node, "display_name", profile.id);
                 profile.transport = toLower(readOrDefault<std::string>(node, "transport", profile.transport));
                 profile.enabled = readOrDefault<bool>(node, "enabled", profile.enabled);
+                profile.version = std::max(1, readOrDefault<int>(node, "version", profile.version));
+                profile.created_at_ms = readOrDefault<long long>(node, "created_at_ms", 0);
+                profile.updated_at_ms = readOrDefault<long long>(node, "updated_at_ms", 0);
+                profile.deleted_at_ms = readOrDefault<long long>(node, "deleted_at_ms", 0);
+
+                if (profile.deleted_at_ms != 0) {
+                    continue;
+                }
 
                 if (profile.id.empty()) {
                     continue;

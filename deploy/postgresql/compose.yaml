@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: vision-project-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vision_project
+      POSTGRES_USER: vision_app
+      POSTGRES_PASSWORD: ${YOLO11_POSTGRES_PASSWORD:?set YOLO11_POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - vision_project_postgres:/var/lib/postgresql/data
+      - ../../db/postgresql/000_create_test_database.sql:/docker-entrypoint-initdb.d/000_create_test_database.sql:ro
+      - ../../db/postgresql/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vision_app -d vision_project"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  vision_project_postgres:

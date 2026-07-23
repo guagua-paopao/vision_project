@@ -50,4 +50,5 @@ private:
 
     QNetworkAccessManager network_;
     QUrl baseUrl_{QStringLiteral("http://127.0.0.1:8087")};
+    QByteArray bearerToken_;
 };

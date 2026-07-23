@@ -28,12 +28,29 @@ if (-not ($env:YOLO11_CAMERA_ENTRY_URL.StartsWith("rtsp://", [StringComparison]:
           $env:YOLO11_CAMERA_ENTRY_URL.StartsWith("rtsps://", [StringComparison]::OrdinalIgnoreCase))) {
     throw "Camera URI must start with rtsp:// or rtsps://"
 }
+if (-not $env:YOLO11_CAMERA_TASK_ADMIN_TOKEN) {
+    $env:YOLO11_CAMERA_TASK_ADMIN_TOKEN = Read-SecretText "Enter Camera Task admin token (input hidden)"
+}
+if ([string]::IsNullOrWhiteSpace($env:YOLO11_CAMERA_TASK_ADMIN_TOKEN)) {
+    throw "Camera Task admin token must not be empty"
+}
+if (-not $env:YOLO11_POSTGRES_DSN) {
+    $env:YOLO11_POSTGRES_DSN = Read-SecretText "Enter PostgreSQL DSN (input hidden)"
+}
+if ([string]::IsNullOrWhiteSpace($env:YOLO11_POSTGRES_DSN)) {
+    throw "PostgreSQL DSN must not be empty"
+}
 
 & (Join-Path $PSScriptRoot "stop_demo.ps1") -Root $ProjectRoot
 $canonicalPath = $env:Path
 [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
 [Environment]::SetEnvironmentVariable("Path", $canonicalPath, "Process")
 $env:Path = "$(Join-Path $CudaRoot 'bin');$(Join-Path $TensorRtRoot 'lib');$OpenCvBin;$env:Path"
+
+$ffmpegCommand = Get-Command ffmpeg.exe -CommandType Application -ErrorAction SilentlyContinue
+if (-not $ffmpegCommand) {
+    throw "System ffmpeg.exe is required for Windows Camera FrameHub capture and must be available on PATH."
+}
 
 $BackendPath = [IO.Path]::GetFullPath((Join-Path $ProjectRoot $BuildDir))
 $serverExe = Join-Path $BackendPath "four_stage_server.exe"
@@ -46,6 +63,7 @@ $pidDir = Join-Path $ProjectRoot "runtime\pids"
 $logDir = Join-Path $ProjectRoot "runtime\logs\process"
 New-Item -ItemType Directory -Force -Path $pidDir, $logDir,
     (Join-Path $ProjectRoot "runtime\output\people_flow"),
+    (Join-Path $ProjectRoot "runtime\output\camera_frames"),
     (Join-Path $ProjectRoot "runtime\data") | Out-Null
 
 function Start-LoggedProcess([string]$Name, [string]$Exe, [string[]]$Arguments) {
@@ -72,7 +90,10 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 300
 }
 if (-not $ready) {
-    $processes | ForEach-Object { Stop-Process -Id ([int]$_.pid) -Force -ErrorAction SilentlyContinue }
+    $processes | ForEach-Object {
+        Stop-Process -Id ([int]$_.pid) -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id ([int]$_.pid) -Timeout 5 -ErrorAction SilentlyContinue
+    }
     throw "Backend did not become ready. Inspect runtime\logs\process."
 }
 
@@ -87,5 +108,6 @@ if (-not $SkipQt) {
 $pidFile = Join-Path $pidDir "demo.json"
 [ordered]@{ started_at=(Get-Date).ToString("s"); processes=$processes } |
     ConvertTo-Json -Depth 6 | Set-Content -Path $pidFile -Encoding UTF8
-Write-Host "PASS: Redis -> TensorRT worker -> HTTP -> Qt demo is ready." -ForegroundColor Green
+Write-Host "PASS: PostgreSQL + Redis -> TensorRT worker -> HTTP -> Qt demo is ready." -ForegroundColor Green
 Write-Host "In Qt click Check Service, then Start Session."
+Write-Host "Camera administration: http://127.0.0.1:8087/camera-admin"

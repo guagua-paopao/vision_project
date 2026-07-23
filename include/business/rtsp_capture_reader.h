@@ -3,21 +3,19 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <thread>
 
 #include <opencv2/core.hpp>
 
+#include "business/camera_frame_types.h"
 #include "server/app_config.h"
+#include "server/ffmpeg_open_coordinator.h"
 
 namespace yolo11_server {
 
-    struct CapturedFrame {
-        cv::Mat image;
-        std::uint64_t sequence = 0;
-        long long capture_time_ms = 0;
-        bool resolution_changed = false;
-    };
+    using CapturedFrame = FrameEnvelope;
 
     struct RtspCaptureMetrics {
         std::string state = "stopped";
@@ -33,6 +31,8 @@ namespace yolo11_server {
         int height = 0;
         bool resolution_changed = false;
         long long resolution_change_count = 0;
+        long long open_count = 0;
+        long long overwritten_frames = 0;
         std::string last_error;
     };
 
@@ -43,7 +43,11 @@ namespace yolo11_server {
     // as a deliberate drop, so slow inference never creates an old-frame queue.
     class RtspCaptureReader {
     public:
-        explicit RtspCaptureReader(const CaptureSection& config);
+        explicit RtspCaptureReader(
+            const CaptureSection& config,
+            std::shared_ptr<FfmpegOpenCoordinator> open_coordinator = FfmpegOpenCoordinator::shared(),
+            bool require_ffmpeg_backend = false
+        );
         ~RtspCaptureReader() noexcept;
 
         RtspCaptureReader(const RtspCaptureReader&) = delete;
@@ -58,6 +62,7 @@ namespace yolo11_server {
         void stop() noexcept;
 
         bool getLatestFrame(std::uint64_t after_sequence, CapturedFrame& frame);
+        SharedCameraFrame getLatestFrameShared(std::uint64_t after_sequence = 0) const;
         RtspCaptureMetrics metrics() const;
         bool active() const;
 
@@ -70,13 +75,14 @@ namespace yolo11_server {
 
     private:
         CaptureSection config_;
+        std::shared_ptr<FfmpegOpenCoordinator> open_coordinator_;
+        bool require_ffmpeg_backend_ = false;
         std::string uri_;
         std::string masked_uri_;
         std::string camera_profile_;
 
         mutable std::mutex mutex_;
-        CapturedFrame latest_;
-        std::uint64_t delivered_sequence_ = 0;
+        SharedCameraFrame latest_;
         RtspCaptureMetrics metrics_;
 
         std::thread capture_thread_;

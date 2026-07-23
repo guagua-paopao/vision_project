@@ -70,6 +70,8 @@ def verify_qt_endpoint_wiring() -> None:
     ]
     missing = [fragment for fragment in required_fragments if fragment not in source]
     assert not missing, f"Qt API client is missing endpoint wiring: {missing}"
+    assert "YOLO11_CAMERA_TASK_ADMIN_TOKEN" in source
+    assert '"Authorization"' in source and '"Bearer "' in source
     forbidden = ["source_uri", "rtsp_url", "password"]
     assert all(token not in source for token in forbidden), "Qt client must not send camera secrets"
 

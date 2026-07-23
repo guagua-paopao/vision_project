@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -28,11 +29,12 @@
 #include "business/person_detector_adapter.h"
 #include "business/person_tracker.h"
 #include "business/people_flow_renderer.h"
-#include "business/rtsp_capture_reader.h"
 #include "business/security_live_pipeline.h"
 #include "business/security_overlay_renderer.h"
 #include "server/camera_profile.h"
-#include "server/uri_masker.h"
+#include "server/people_flow_session_runner.h"
+#include "server/rtsp_camera_frame_source.h"
+#include "server/shared_camera_frame_hub.h"
 
 namespace yolo11_server {
 
@@ -164,11 +166,13 @@ namespace yolo11_server {
     PeopleFlowInferenceWorker::PeopleFlowInferenceWorker(
         int worker_id,
         const AppConfig& config,
-        const std::string& consumer_name
+        const std::string& consumer_name,
+        std::shared_ptr<SharedCameraFrameHubRegistry> hub_registry
     ) : worker_id_(worker_id),
         config_(config),
         redis_queue_(workerRedisConfig(config.redis, consumer_name)),
-        heartbeat_queue_(workerRedisConfig(config.redis, consumer_name)) {
+        heartbeat_queue_(workerRedisConfig(config.redis, consumer_name)),
+        hub_registry_(std::move(hub_registry)) {
         config_.redis.consumer_name = consumer_name;
         process_start_time_ms_ = nowMs();
     }
@@ -194,23 +198,42 @@ namespace yolo11_server {
             spdlog::error("People-flow config invalid: {}", config_.people_flow.config_error);
             return false;
         }
+        if (!config_.camera_hub.enabled) {
+            spdlog::error("People-flow worker requires camera_hub.enabled=true");
+            return false;
+        }
+        if (!hub_registry_) {
+            hub_registry_ = createSharedCameraFrameHubRegistry(config_);
+            owns_hub_registry_ = true;
+        }
+        if (!hub_registry_) {
+            spdlog::error("People-flow camera Hub registry initialization failed");
+            return false;
+        }
         std::string error;
+        std::cerr << "[BOOT] connecting People Flow Redis clients\n";
         if (!redis_queue_.connect(error) || !heartbeat_queue_.connect(error)) {
             spdlog::error("People-flow Redis connection failed: {}", error);
             return false;
         }
+        std::cerr << "[BOOT] People Flow Redis clients connected\n";
+        std::cerr << "[BOOT] initializing People Flow model\n";
         if (!initModelRunner()) return false;
         runner_initialized_ = true;
+        std::cerr << "[BOOT] People Flow model initialized\n";
         std::filesystem::create_directories(config_.people_flow.output_dir);
         repository_ = std::make_unique<PeopleFlowRepository>(config_.people_flow);
         std::string storage_error;
+        std::cerr << "[BOOT] starting People Flow repository\n";
         if (!repository_->start(true, storage_error)) {
-            spdlog::warn("People-flow SQLite starts degraded and will retry: {}", storage_error);
+            spdlog::warn("People-flow PostgreSQL starts degraded and will retry: {}", storage_error);
         }
+        std::cerr << "[BOOT] People Flow repository started\n";
         running_.store(true);
         setWorkerState("idle", "", "");
         if (config_.worker.heartbeat_enabled) heartbeat_thread_ = std::thread([this]() { heartbeatLoop(); });
         thread_ = std::thread([this]() { loop(); });
+        std::cerr << "[BOOT] People Flow command and heartbeat threads started\n";
         return true;
     }
 
@@ -220,6 +243,11 @@ namespace yolo11_server {
             if (thread_.joinable()) thread_.join();
             if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
             if (repository_) repository_->stop();
+            if (owns_hub_registry_ && hub_registry_) {
+                hub_registry_->stopAll();
+                hub_registry_.reset();
+                owns_hub_registry_ = false;
+            }
         }
         catch (...) {
             spdlog::error("People-flow worker stop exception ignored");
@@ -255,6 +283,11 @@ namespace yolo11_server {
     void PeopleFlowInferenceWorker::loop() {
         writeHeartbeatNoexcept();
         while (running_.load()) {
+            if (session_active_.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+            if (session_thread_.joinable()) session_thread_.join();
             RedisTask task;
             std::string error;
             if (!redis_queue_.popTask(task, error)) {
@@ -264,18 +297,51 @@ namespace yolo11_server {
                 }
                 continue;
             }
-            processTask(task);
+            session_active_.store(true);
+            try {
+                session_thread_ = std::thread([this, task]() {
+                    try {
+                        PeopleFlowSessionRunner session(
+                            worker_id_, config_, redis_queue_, repository_.get(), runner_.get(),
+                            hub_registry_, running_, processed_count_, failed_count_,
+                            [this](const std::string& status, const std::string& session_id,
+                                   const std::string& state_error) {
+                                setWorkerState(status, session_id, state_error);
+                            },
+                            [this]() { writeHeartbeatNoexcept(); });
+                        session.run(task);
+                    }
+                    catch (const std::exception& e) {
+                        failed_count_.fetch_add(1);
+                        setWorkerState("idle", "", e.what());
+                        spdlog::error("Unhandled People Flow Runner error: {}", e.what());
+                    }
+                    catch (...) {
+                        failed_count_.fetch_add(1);
+                        setWorkerState("idle", "", "unknown People Flow Runner error");
+                        spdlog::error("Unhandled unknown People Flow Runner error");
+                    }
+                    session_active_.store(false);
+                });
+            }
+            catch (const std::exception& e) {
+                session_active_.store(false);
+                failed_count_.fetch_add(1);
+                setWorkerState("idle", "", e.what());
+                spdlog::error("Failed to create People Flow session thread: {}", e.what());
+            }
         }
+        if (session_thread_.joinable()) session_thread_.join();
         setWorkerState("stopping", "", "");
         writeHeartbeatNoexcept();
     }
 
-    void PeopleFlowInferenceWorker::processTask(const RedisTask& task) {
+    void PeopleFlowSessionRunner::run(const RedisTask& task) {
         const std::string session_id = task.people_flow_session_id.empty() ? task.task_id : task.people_flow_session_id;
         const std::string camera_id = task.people_flow_camera_id.empty() ? config_.people_flow.camera_id : task.people_flow_camera_id;
         const long long start_time_ms = nowMs();
         bool acknowledged = false;
-        RtspCaptureReader capture(config_.capture);
+        std::shared_ptr<FrameSubscription> frame_subscription;
         PeopleFlowSessionStatus state;
         state.found = true;
         state.session_id = session_id;
@@ -295,7 +361,6 @@ namespace yolo11_server {
         state.last_update_ms = start_time_ms;
         state.occupancy = std::max(0LL, task.initial_occupancy);
         bool redis_event_degraded = false;
-
         if (repository_) {
             PeopleFlowSessionRecord session;
             session.session_id = session_id;
@@ -307,7 +372,6 @@ namespace yolo11_server {
             session.config_version = state.config_version;
             if (!repository_->enqueueSessionStart(session)) redis_event_degraded = true;
         }
-
         auto publish = [&]() {
             state.last_update_ms = nowMs();
             if (repository_) {
@@ -316,7 +380,7 @@ namespace yolo11_server {
                 state.storage_degraded = redis_event_degraded || storage_health.degraded ||
                     storage_health.dropped_tasks > 0;
                 if (storage_health.degraded && state.last_error.empty()) {
-                    state.last_error = "SQLite persistence degraded";
+                    state.last_error = "PostgreSQL persistence degraded";
                 }
             }
             else {
@@ -345,23 +409,18 @@ namespace yolo11_server {
             if (profile_it == config_.camera_profiles.end()) throw std::runtime_error("camera profile is unknown");
             const CameraProfile& profile = profile_it->second;
             if (task.source_ref != "env:" + profile.url_env) throw std::runtime_error("camera profile secret reference mismatch");
-            std::string resolved_uri;
-            std::string profile_error;
-            if (!resolveCameraProfileUri(profile, resolved_uri, profile_error)) throw std::runtime_error(profile_error);
-            if (!isRtspUri(resolved_uri)) {
-                std::fill(resolved_uri.begin(), resolved_uri.end(), '\0');
-                throw std::runtime_error("camera profile environment value is not an RTSP URI");
+            if (!hub_registry_) throw std::runtime_error("camera Hub registry is unavailable");
+            std::string subscription_error;
+            const SubscriberDescriptor subscriber{
+                "people_flow:" + config_.redis.consumer_name + ":" + session_id,
+                "people_flow"
+            };
+            if (!hub_registry_->subscribe(
+                    task.camera_profile, subscriber, frame_subscription, subscription_error)) {
+                throw std::runtime_error(subscription_error.empty()
+                    ? "camera Hub subscription failed"
+                    : subscription_error);
             }
-            state.masked_uri = maskRtspUri(resolved_uri);
-            std::string capture_error;
-            if (!capture.start(resolved_uri, state.masked_uri, task.camera_profile, capture_error)) {
-                std::fill(resolved_uri.begin(), resolved_uri.end(), '\0');
-                throw std::runtime_error(capture_error);
-            }
-            std::fill(resolved_uri.begin(), resolved_uri.end(), '\0');
-            resolved_uri.clear();
-            resolved_uri.shrink_to_fit();
-
             std::string ack_error;
             acknowledged = redis_queue_.ackTask(task.stream_id, ack_error);
             if (!acknowledged) spdlog::warn("People-flow XACK failed: session_id={}, error={}", session_id, ack_error);
@@ -402,7 +461,6 @@ namespace yolo11_server {
                 std::filesystem::create_directories(event_frames_dir);
             }
 
-            std::uint64_t last_sequence = 0;
             int last_reconnect_count = 0;
             int warmup_remaining = config_.people_flow.warmup_frames_after_reconnect;
             long long last_status_update_ms = 0;
@@ -434,25 +492,29 @@ namespace yolo11_server {
                     last_stop_check_ms = loop_ms;
                 }
 
-                const RtspCaptureMetrics capture_metrics = capture.metrics();
-                state.capture_state = capture_metrics.state;
-                state.capture_backend = capture_metrics.backend_name;
-                state.capture_fps = capture_metrics.capture_fps;
-                state.source_fps = capture_metrics.source_fps;
-                state.latest_frame_age_ms = capture_metrics.latest_frame_age_ms;
-                state.last_frame_time_ms = capture_metrics.last_frame_time_ms;
-                state.reconnect_count = capture_metrics.reconnect_count;
-                state.dropped_frames = capture_metrics.dropped_frames;
-                state.width = capture_metrics.width;
-                state.height = capture_metrics.height;
-                state.resolution_changed = capture_metrics.resolution_changed;
-                state.last_error = capture_metrics.last_error;
-                if (capture_metrics.state == "failed") {
-                    throw std::runtime_error(capture_metrics.last_error.empty()
+                const CameraHubStatus hub_status = frame_subscription->hubStatus();
+                const SubscriptionMetrics subscription_metrics = frame_subscription->metrics();
+                state.capture_state = hub_status.state;
+                state.capture_backend = hub_status.backend_name;
+                state.shared_hub = true;
+                state.hub_instance_id = hub_status.hub_instance_id;
+                state.hub_subscribers = hub_status.subscriber_count;
+                state.capture_fps = hub_status.capture_fps;
+                state.source_fps = hub_status.source_fps;
+                state.latest_frame_age_ms = hub_status.latest_frame_age_ms;
+                state.last_frame_time_ms = hub_status.last_frame_time_ms;
+                state.reconnect_count = hub_status.reconnect_count;
+                state.dropped_frames = subscription_metrics.skipped_frames;
+                state.width = hub_status.width;
+                state.height = hub_status.height;
+                state.resolution_changed = hub_status.resolution_changed;
+                state.last_error = hub_status.last_error;
+                if (hub_status.state == "failed" || hub_status.state == "stopped") {
+                    throw std::runtime_error(hub_status.last_error.empty()
                         ? "RTSP capture failed"
-                        : capture_metrics.last_error);
+                        : hub_status.last_error);
                 }
-                if (capture_metrics.reconnect_count != last_reconnect_count) {
+                if (hub_status.reconnect_count != last_reconnect_count) {
                     tracker.reset();
                     counter.resetTrackState();
                     renderer.resetEventMarkers();
@@ -464,16 +526,16 @@ namespace yolo11_server {
                     counter_debug_states.clear();
                     frame_debug = {};
                     warmup_remaining = config_.people_flow.warmup_frames_after_reconnect;
-                    last_reconnect_count = capture_metrics.reconnect_count;
+                    last_reconnect_count = hub_status.reconnect_count;
                 }
-                state.status = capture_metrics.state == "running" ? "running" : "reconnecting";
+                state.status = hub_status.state == "running" ? "running" : "reconnecting";
                 setWorkerState(state.status, session_id, state.last_error);
 
                 const auto steady_now = std::chrono::steady_clock::now();
-                if (capture_metrics.state == "running" && steady_now >= next_infer_time) {
-                    CapturedFrame captured;
-                    if (capture.getLatestFrame(last_sequence, captured)) {
-                        last_sequence = captured.sequence;
+                if (hub_status.state == "running" && steady_now >= next_infer_time) {
+                    FrameReadResult read_result;
+                    if (frame_subscription->tryReadLatest(read_result) && read_result.frame) {
+                        const FrameEnvelope& captured = *read_result.frame;
                         const auto infer_start = std::chrono::steady_clock::now();
                         const ModelOutput output = runner_->infer(captured.image);
                         if (debug_enabled) {
@@ -616,7 +678,7 @@ namespace yolo11_server {
                             }
                             if (!repository_ || !repository_->enqueueEvent(event)) {
                                 redis_event_degraded = true;
-                                state.last_error = "SQLite crossing event enqueue failed";
+                                state.last_error = "PostgreSQL crossing event enqueue failed";
                             }
                         }
                         next_infer_time = steady_now + std::chrono::milliseconds(
@@ -653,7 +715,7 @@ namespace yolo11_server {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
 
-            capture.stop();
+            frame_subscription.reset();
             state.status = "stopped";
             state.capture_state = "stopped";
             state.stop_time_ms = nowMs();
@@ -683,7 +745,7 @@ namespace yolo11_server {
             writeHeartbeatNoexcept();
         }
         catch (const std::exception& e) {
-            capture.stop();
+            frame_subscription.reset();
             state.status = "failed";
             state.capture_state = "failed";
             state.stop_time_ms = nowMs();
@@ -739,15 +801,18 @@ namespace yolo11_server {
             heartbeat.host = hostNameString();
             heartbeat.worker_id = worker_id_;
             heartbeat.gpu_id = config_.model.gpu_id;
-            heartbeat.model_type = "people_flow";
+            heartbeat.model_type = "vision_host";
             heartbeat.runner_model_type = runner_ ? runner_->modelType() : config_.model.type;
             heartbeat.worker_group = config_.worker.worker_group;
-            heartbeat.worker_kind = "people_flow";
-            heartbeat.task_kind = "live_people_flow";
+            heartbeat.worker_kind = "vision_host";
+            heartbeat.task_kind = config_.camera_tasks.enabled
+                ? "live_people_flow,camera_frame"
+                : "live_people_flow";
             heartbeat.stream_type = "long_running_stream";
             heartbeat.engine_path = config_.model.engine_path;
             heartbeat.labels_path = config_.model.labels_path;
-            heartbeat.max_concurrency = 1;
+            heartbeat.max_concurrency = 1 +
+                (config_.camera_tasks.enabled ? config_.camera_tasks.max_active_runs : 0);
             heartbeat.processed_count = processed_count_.load();
             heartbeat.failed_count = failed_count_.load();
             heartbeat.start_time_ms = process_start_time_ms_;

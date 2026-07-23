@@ -13,9 +13,16 @@
 
 namespace yolo11_server {
 
+    class SharedCameraFrameHubRegistry;
+
     class PeopleFlowInferenceWorker {
     public:
-        PeopleFlowInferenceWorker(int worker_id, const AppConfig& config, const std::string& consumer_name);
+        PeopleFlowInferenceWorker(
+            int worker_id,
+            const AppConfig& config,
+            const std::string& consumer_name,
+            std::shared_ptr<SharedCameraFrameHubRegistry> hub_registry = {}
+        );
         ~PeopleFlowInferenceWorker() noexcept;
 
         PeopleFlowInferenceWorker(const PeopleFlowInferenceWorker&) = delete;
@@ -27,7 +34,6 @@ namespace yolo11_server {
 
     private:
         void loop();
-        void processTask(const RedisTask& task);
         bool initModelRunner();
         void releaseRunnerNoexcept() noexcept;
         void heartbeatLoop() noexcept;
@@ -40,11 +46,15 @@ namespace yolo11_server {
         AppConfig config_;
         RedisTaskQueue redis_queue_;
         RedisTaskQueue heartbeat_queue_;
+        std::shared_ptr<SharedCameraFrameHubRegistry> hub_registry_;
+        bool owns_hub_registry_ = false;
         std::unique_ptr<PeopleFlowRepository> repository_;
         std::unique_ptr<IModelRunner> runner_;
         std::thread thread_;
+        std::thread session_thread_;
         std::thread heartbeat_thread_;
         std::atomic<bool> running_{ false };
+        std::atomic<bool> session_active_{ false };
         bool runner_initialized_ = false;
         mutable std::mutex state_mutex_;
         std::string worker_status_ = "starting";

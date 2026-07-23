@@ -8,6 +8,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "server/yaml_file_loader.h"
+
 namespace yolo11_server {
 
     namespace {
@@ -28,6 +30,9 @@ namespace yolo11_server {
         }
 
         std::string inferWorkerKind(const AppConfig& config) {
+            if (config.people_flow.enabled && config.camera_tasks.enabled) {
+                return "vision_host";
+            }
             if (config.people_flow.enabled) {
                 return "people_flow";
             }
@@ -41,6 +46,9 @@ namespace yolo11_server {
         }
 
         std::string inferTaskKind(const AppConfig& config) {
+            if (config.people_flow.enabled && config.camera_tasks.enabled) {
+                return "people_flow,camera_frame";
+            }
             if (config.people_flow.enabled) {
                 return "live_people_flow";
             }
@@ -54,7 +62,7 @@ namespace yolo11_server {
         }
 
         std::string inferStreamType(const AppConfig& config) {
-            return (config.stream.enabled || config.people_flow.enabled)
+            return (config.stream.enabled || config.people_flow.enabled || config.camera_tasks.enabled)
                 ? std::string("long_running_stream")
                 : std::string("redis_stream");
         }
@@ -124,13 +132,11 @@ namespace yolo11_server {
 
         YAML::Node root;
         try {
-            root = YAML::LoadFile(yaml_path);
+            root = loadYamlFileAbiSafe(yaml_path);
         }
         catch (const std::exception& e) {
-            std::cerr << "Failed to load config file: " << yaml_path << std::endl;
-            std::cerr << "Reason: " << e.what() << std::endl;
-            std::cerr << "Use built-in default config instead." << std::endl;
-            return config;
+            throw std::runtime_error(
+                "CONFIG_FILE_LOAD_FAILED: " + yaml_path + ": " + e.what());
         }
 
         auto server = root["server"];
@@ -316,6 +322,162 @@ namespace yolo11_server {
         config.capture.reconnect_max_delay_ms = std::clamp(config.capture.reconnect_max_delay_ms,
             config.capture.reconnect_initial_delay_ms, 300000);
         config.capture.status_update_interval_ms = std::clamp(config.capture.status_update_interval_ms, 200, 10000);
+
+        auto camera_hub = root["camera_hub"];
+        config.camera_hub.enabled = readOrDefault<bool>(camera_hub, "enabled", config.camera_hub.enabled);
+        config.camera_hub.max_active_hubs = readOrDefault<int>(
+            camera_hub, "max_active_hubs", config.camera_hub.max_active_hubs);
+        config.camera_hub.idle_grace_ms = readOrDefault<int>(
+            camera_hub, "idle_grace_ms", config.camera_hub.idle_grace_ms);
+        config.camera_hub.require_ffmpeg_backend = readOrDefault<bool>(
+            camera_hub, "require_ffmpeg_backend", config.camera_hub.require_ffmpeg_backend);
+        config.camera_hub.status_update_interval_ms = readOrDefault<int>(
+            camera_hub, "status_update_interval_ms", config.camera_hub.status_update_interval_ms);
+        config.camera_hub.max_active_hubs = std::clamp(config.camera_hub.max_active_hubs, 1, 64);
+        config.camera_hub.idle_grace_ms = std::clamp(config.camera_hub.idle_grace_ms, 0, 300000);
+        config.camera_hub.status_update_interval_ms = std::clamp(
+            config.camera_hub.status_update_interval_ms, 200, 10000);
+
+        auto camera_tasks = root["camera_tasks"];
+        config.camera_tasks.enabled = readOrDefault<bool>(camera_tasks, "enabled", config.camera_tasks.enabled);
+        config.camera_tasks.postgres_dsn_env = readOrDefault<std::string>(
+            camera_tasks, "postgres_dsn_env", config.camera_tasks.postgres_dsn_env);
+        config.camera_tasks.output_dir = readOrDefault<std::string>(
+            camera_tasks, "output_dir", config.camera_tasks.output_dir);
+        config.camera_tasks.admin_ui_dir = readOrDefault<std::string>(
+            camera_tasks, "admin_ui_dir", config.camera_tasks.admin_ui_dir);
+        config.camera_tasks.command_stream_key = readOrDefault<std::string>(
+            camera_tasks, "command_stream_key", config.camera_tasks.command_stream_key);
+        config.camera_tasks.consumer_group = readOrDefault<std::string>(
+            camera_tasks, "consumer_group", config.camera_tasks.consumer_group);
+        config.camera_tasks.max_active_runs = readOrDefault<int>(
+            camera_tasks, "max_active_runs", config.camera_tasks.max_active_runs);
+        config.camera_tasks.writer_threads = readOrDefault<int>(
+            camera_tasks, "writer_threads", config.camera_tasks.writer_threads);
+        config.camera_tasks.writer_queue_capacity = readOrDefault<int>(
+            camera_tasks, "writer_queue_capacity", config.camera_tasks.writer_queue_capacity);
+        config.camera_tasks.writer_queue_capacity_per_run = readOrDefault<int>(
+            camera_tasks, "writer_queue_capacity_per_run", config.camera_tasks.writer_queue_capacity_per_run);
+        config.camera_tasks.status_ttl_seconds = readOrDefault<int>(
+            camera_tasks, "status_ttl_seconds", config.camera_tasks.status_ttl_seconds);
+        config.camera_tasks.lease_ttl_seconds = readOrDefault<int>(
+            camera_tasks, "lease_ttl_seconds", config.camera_tasks.lease_ttl_seconds);
+        config.camera_tasks.lease_refresh_seconds = readOrDefault<int>(
+            camera_tasks, "lease_refresh_seconds", config.camera_tasks.lease_refresh_seconds);
+        config.camera_tasks.stale_run_timeout_ms = readOrDefault<int>(
+            camera_tasks, "stale_run_timeout_ms", config.camera_tasks.stale_run_timeout_ms);
+        config.camera_tasks.retention_sweep_interval_seconds = readOrDefault<int>(
+            camera_tasks, "retention_sweep_interval_seconds",
+            config.camera_tasks.retention_sweep_interval_seconds);
+        config.camera_tasks.retention_batch_size = readOrDefault<int>(
+            camera_tasks, "retention_batch_size", config.camera_tasks.retention_batch_size);
+        config.camera_tasks.admin_token_env = readOrDefault<std::string>(
+            camera_tasks, "admin_token_env", config.camera_tasks.admin_token_env);
+        const auto camera_task_storage = camera_tasks["storage"];
+        config.camera_tasks.storage.max_archive_bytes = readOrDefault<long long>(
+            camera_task_storage, "max_archive_bytes", config.camera_tasks.storage.max_archive_bytes);
+        config.camera_tasks.storage.min_free_bytes = readOrDefault<long long>(
+            camera_task_storage, "min_free_bytes", config.camera_tasks.storage.min_free_bytes);
+        config.camera_tasks.storage.high_watermark_percent = readOrDefault<int>(
+            camera_task_storage, "high_watermark_percent",
+            config.camera_tasks.storage.high_watermark_percent);
+        config.camera_tasks.storage.critical_watermark_percent = readOrDefault<int>(
+            camera_task_storage, "critical_watermark_percent",
+            config.camera_tasks.storage.critical_watermark_percent);
+        config.camera_tasks.storage.pressure_cleanup_batch_size = readOrDefault<int>(
+            camera_task_storage, "pressure_cleanup_batch_size",
+            config.camera_tasks.storage.pressure_cleanup_batch_size);
+        config.camera_tasks.storage.backup_dir = readOrDefault<std::string>(
+            camera_task_storage, "backup_dir", config.camera_tasks.storage.backup_dir);
+        config.camera_tasks.storage.backup_retention_count = readOrDefault<int>(
+            camera_task_storage, "backup_retention_count",
+            config.camera_tasks.storage.backup_retention_count);
+        const auto camera_task_defaults = camera_tasks["defaults"];
+        config.camera_tasks.defaults.frame_interval_ms = readOrDefault<int>(
+            camera_task_defaults, "frame_interval_ms", config.camera_tasks.defaults.frame_interval_ms);
+        config.camera_tasks.defaults.output_mode = toLowerString(readOrDefault<std::string>(
+            camera_task_defaults, "output_mode", config.camera_tasks.defaults.output_mode));
+        config.camera_tasks.defaults.jpeg_quality = readOrDefault<int>(
+            camera_task_defaults, "jpeg_quality", config.camera_tasks.defaults.jpeg_quality);
+        config.camera_tasks.defaults.max_width = readOrDefault<int>(
+            camera_task_defaults, "max_width", config.camera_tasks.defaults.max_width);
+        config.camera_tasks.defaults.max_height = readOrDefault<int>(
+            camera_task_defaults, "max_height", config.camera_tasks.defaults.max_height);
+        config.camera_tasks.defaults.retention_days = readOrDefault<int>(
+            camera_task_defaults, "retention_days", config.camera_tasks.defaults.retention_days);
+        config.camera_tasks.defaults.max_saved_frames = readOrDefault<int>(
+            camera_task_defaults, "max_saved_frames", config.camera_tasks.defaults.max_saved_frames);
+        config.camera_tasks.defaults.analysis_enabled = readOrDefault<bool>(
+            camera_task_defaults, "analysis_enabled", config.camera_tasks.defaults.analysis_enabled);
+        config.camera_tasks.defaults.target_infer_fps = readOrDefault<double>(
+            camera_task_defaults, "target_infer_fps", config.camera_tasks.defaults.target_infer_fps);
+        config.camera_tasks.defaults.algorithm_profile = readOrDefault<std::string>(
+            camera_task_defaults, "algorithm_profile", config.camera_tasks.defaults.algorithm_profile);
+        config.camera_tasks.defaults.algorithms = readOrDefault<std::vector<std::string>>(
+            camera_task_defaults, "algorithms", config.camera_tasks.defaults.algorithms);
+        config.camera_tasks.defaults.callback_profile = readOrDefault<std::string>(
+            camera_task_defaults, "callback_profile", config.camera_tasks.defaults.callback_profile);
+
+        config.camera_tasks.max_active_runs = std::clamp(config.camera_tasks.max_active_runs, 1, 64);
+        config.camera_tasks.writer_threads = std::clamp(config.camera_tasks.writer_threads, 1, 16);
+        config.camera_tasks.writer_queue_capacity = std::clamp(
+            config.camera_tasks.writer_queue_capacity, 1, 10000);
+        config.camera_tasks.writer_queue_capacity_per_run = std::clamp(
+            config.camera_tasks.writer_queue_capacity_per_run, 1,
+            config.camera_tasks.writer_queue_capacity);
+        config.camera_tasks.status_ttl_seconds = std::clamp(
+            config.camera_tasks.status_ttl_seconds, 60, 31536000);
+        config.camera_tasks.lease_ttl_seconds = std::clamp(
+            config.camera_tasks.lease_ttl_seconds, 5, 3600);
+        config.camera_tasks.lease_refresh_seconds = std::clamp(
+            config.camera_tasks.lease_refresh_seconds, 1,
+            std::max(1, config.camera_tasks.lease_ttl_seconds - 1));
+        config.camera_tasks.stale_run_timeout_ms = std::clamp(
+            config.camera_tasks.stale_run_timeout_ms, 5000, 3600000);
+        config.camera_tasks.retention_sweep_interval_seconds = std::clamp(
+            config.camera_tasks.retention_sweep_interval_seconds, 5, 86400);
+        config.camera_tasks.retention_batch_size = std::clamp(
+            config.camera_tasks.retention_batch_size, 1, 10000);
+        config.camera_tasks.storage.max_archive_bytes = std::max(0LL,
+            config.camera_tasks.storage.max_archive_bytes);
+        config.camera_tasks.storage.min_free_bytes = std::max(0LL,
+            config.camera_tasks.storage.min_free_bytes);
+        config.camera_tasks.storage.high_watermark_percent = std::clamp(
+            config.camera_tasks.storage.high_watermark_percent, 1, 98);
+        config.camera_tasks.storage.critical_watermark_percent = std::clamp(
+            config.camera_tasks.storage.critical_watermark_percent,
+            config.camera_tasks.storage.high_watermark_percent + 1, 99);
+        config.camera_tasks.storage.pressure_cleanup_batch_size = std::clamp(
+            config.camera_tasks.storage.pressure_cleanup_batch_size, 1, 10000);
+        config.camera_tasks.storage.backup_retention_count = std::clamp(
+            config.camera_tasks.storage.backup_retention_count, 1, 365);
+        config.camera_tasks.defaults.frame_interval_ms = std::clamp(
+            config.camera_tasks.defaults.frame_interval_ms, 100, 3600000);
+        config.camera_tasks.defaults.jpeg_quality = std::clamp(
+            config.camera_tasks.defaults.jpeg_quality, 1, 100);
+        config.camera_tasks.defaults.max_width = std::clamp(
+            config.camera_tasks.defaults.max_width, 0, 8192);
+        config.camera_tasks.defaults.max_height = std::clamp(
+            config.camera_tasks.defaults.max_height, 0, 8192);
+        config.camera_tasks.defaults.retention_days = std::clamp(
+            config.camera_tasks.defaults.retention_days, 1, 3650);
+        config.camera_tasks.defaults.max_saved_frames = std::clamp(
+            config.camera_tasks.defaults.max_saved_frames, 1, 1000000);
+        config.camera_tasks.defaults.target_infer_fps = std::clamp(
+            config.camera_tasks.defaults.target_infer_fps, 0.1, 120.0);
+        if (config.camera_tasks.defaults.output_mode != "latest" &&
+            config.camera_tasks.defaults.output_mode != "archive" &&
+            config.camera_tasks.defaults.output_mode != "both") {
+            config.camera_tasks.config_error = "camera_tasks.defaults.output_mode must be latest, archive, or both";
+        }
+        if (config.camera_tasks.enabled &&
+            (config.camera_tasks.postgres_dsn_env.empty() || config.camera_tasks.output_dir.empty() ||
+             config.camera_tasks.command_stream_key.empty() || config.camera_tasks.consumer_group.empty())) {
+            config.camera_tasks.config_error = "camera_tasks PostgreSQL DSN env, paths, and Redis stream/group must not be empty";
+        }
+        if (config.camera_hub.require_ffmpeg_backend && config.capture.allow_backend_fallback) {
+            config.camera_tasks.config_error = "camera_hub requires FFmpeg but capture fallback is enabled";
+        }
 
         auto people_flow = root["people_flow"];
         config.people_flow.enabled = readOrDefault<bool>(people_flow, "enabled", config.people_flow.enabled);
@@ -513,11 +675,11 @@ namespace yolo11_server {
         visual.ui_scale = readOrDefault<double>(visualization, "ui_scale", visual.ui_scale);
 
         const auto storage = people_flow["storage"];
-        config.people_flow.storage.sqlite_path = readOrDefault<std::string>(storage, "sqlite_path", config.people_flow.storage.sqlite_path);
+        config.people_flow.storage.postgres_dsn_env = readOrDefault<std::string>(
+            storage, "postgres_dsn_env", config.people_flow.storage.postgres_dsn_env);
         config.people_flow.storage.writer_queue_capacity = readOrDefault<int>(storage, "writer_queue_capacity", config.people_flow.storage.writer_queue_capacity);
         config.people_flow.storage.writer_batch_size = readOrDefault<int>(storage, "writer_batch_size", config.people_flow.storage.writer_batch_size);
         config.people_flow.storage.writer_flush_interval_ms = readOrDefault<int>(storage, "writer_flush_interval_ms", config.people_flow.storage.writer_flush_interval_ms);
-        config.people_flow.storage.sqlite_busy_timeout_ms = readOrDefault<int>(storage, "sqlite_busy_timeout_ms", config.people_flow.storage.sqlite_busy_timeout_ms);
         config.people_flow.storage.events_max_len = readOrDefault<int>(storage, "events_max_len", config.people_flow.storage.events_max_len);
         config.people_flow.storage.event_retention_days = readOrDefault<int>(storage, "event_retention_days", config.people_flow.storage.event_retention_days);
         config.people_flow.storage.aggregate_retention_days = readOrDefault<int>(storage, "aggregate_retention_days", config.people_flow.storage.aggregate_retention_days);
@@ -629,7 +791,6 @@ namespace yolo11_server {
         config.people_flow.storage.writer_queue_capacity = std::clamp(config.people_flow.storage.writer_queue_capacity, 100, 1000000);
         config.people_flow.storage.writer_batch_size = std::clamp(config.people_flow.storage.writer_batch_size, 1, 10000);
         config.people_flow.storage.writer_flush_interval_ms = std::clamp(config.people_flow.storage.writer_flush_interval_ms, 50, 60000);
-        config.people_flow.storage.sqlite_busy_timeout_ms = std::clamp(config.people_flow.storage.sqlite_busy_timeout_ms, 100, 120000);
         config.people_flow.storage.events_max_len = std::clamp(config.people_flow.storage.events_max_len, 100, 1000000);
         config.people_flow.storage.event_retention_days = std::clamp(config.people_flow.storage.event_retention_days, 1, 3650);
         config.people_flow.storage.aggregate_retention_days = std::clamp(config.people_flow.storage.aggregate_retention_days, 1, 36500);
