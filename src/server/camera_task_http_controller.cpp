@@ -85,6 +85,9 @@ std::string publicError(const std::string& code) {
     if (code == "INVALID_IDEMPOTENCY_KEY") return "Idempotency-Key is invalid";
     if (code == "IDEMPOTENCY_CONFLICT") return "Idempotency-Key was already used for a different request";
     if (code == "ALERT_NOT_FOUND") return "alert was not found";
+    if (code == "CALLBACK_OUTBOX_NOT_FOUND") return "callback delivery was not found";
+    if (code == "CALLBACK_REPLAY_CONFLICT") return "callback delivery status or attempt changed";
+    if (code == "INVALID_CALLBACK_REPLAY") return "callback replay request is invalid";
     return "camera request failed";
 }
 
@@ -374,6 +377,84 @@ json alertJson(const SecurityAlertEventRecord& alert) {
     };
 }
 
+std::string sanitizedDiagnostic(std::string value);
+
+json callbackOutboxJson(const CallbackOutboxRecord& record) {
+    return {
+        {"outbox_id", record.outbox_id},
+        {"event_id", record.event_id},
+        {"camera_id", record.task_id},
+        {"callback_profile", record.callback_profile},
+        {"status", record.status},
+        {"attempt", record.attempt},
+        {"next_attempt_at_ms", record.next_attempt_at_ms},
+        {"last_attempt_at_ms", record.last_attempt_at_ms == 0
+            ? json(nullptr) : json(record.last_attempt_at_ms)},
+        {"delivered_at_ms", record.delivered_at_ms == 0
+            ? json(nullptr) : json(record.delivered_at_ms)},
+        {"last_http_status", record.last_http_status == 0
+            ? json(nullptr) : json(record.last_http_status)},
+        {"last_error_code", record.last_error_code.empty()
+            ? json(nullptr) : json(record.last_error_code)},
+        {"response_body_hash", record.response_body_hash.empty()
+            ? json(nullptr) : json(record.response_body_hash)},
+        {"created_at_ms", record.created_at_ms},
+        {"updated_at_ms", record.updated_at_ms}
+    };
+}
+
+json algorithmRuntimeJson(
+    const AlgorithmRuntimeSnapshot& runtime,
+    bool available,
+    bool stale,
+    const std::string& read_error
+) {
+    return {
+        {"available", available},
+        {"runtime_stale", stale},
+        {"read_error", read_error.empty()
+            ? json(nullptr) : json(sanitizedDiagnostic(read_error))},
+        {"generated_at_ms", runtime.generated_at_ms},
+        {"host_running", runtime.host_running},
+        {"active_pipelines", runtime.active_pipelines},
+        {"inference", {
+            {"configured", runtime.inference_configured},
+            {"running", runtime.inference_running},
+            {"workers_configured", runtime.inference_workers_configured},
+            {"workers_ready", runtime.inference_workers_ready},
+            {"active_cameras", runtime.inference_active_cameras},
+            {"pending_cameras", runtime.inference_pending_cameras},
+            {"submitted_jobs", runtime.inference_submitted_jobs},
+            {"replaced_jobs", runtime.inference_replaced_jobs},
+            {"processed_jobs", runtime.inference_processed_jobs},
+            {"failed_jobs", runtime.inference_failed_jobs},
+            {"stale_results", runtime.inference_stale_results}
+        }},
+        {"processor", {
+            {"running", runtime.processor_running},
+            {"active_sessions", runtime.processor_active_sessions},
+            {"processed_frames", runtime.processor_processed_frames},
+            {"persisted_alerts", runtime.processor_persisted_alerts},
+            {"duplicate_alerts", runtime.processor_duplicate_alerts},
+            {"failed_frames", runtime.processor_failed_frames}
+        }},
+        {"callbacks", {
+            {"configured", runtime.callbacks_configured},
+            {"running", runtime.callback_running},
+            {"profiles_ready", runtime.callback_profiles_ready},
+            {"claimed", runtime.callback_claimed},
+            {"delivered", runtime.callback_delivered},
+            {"retries", runtime.callback_retries},
+            {"dead_letters", runtime.callback_dead_letters},
+            {"transport_failures", runtime.callback_transport_failures},
+            {"lease_conflicts", runtime.callback_lease_conflicts},
+            {"last_success_at_ms", runtime.callback_last_success_at_ms},
+            {"last_error_code", runtime.callback_last_error_code.empty()
+                ? json(nullptr) : json(runtime.callback_last_error_code)}
+        }}
+    };
+}
+
 json profileJson(const CameraProfile& profile) {
     return {
         {"profile_id", profile.id}, {"source_type", profile.source_type},
@@ -448,9 +529,12 @@ CameraTaskHttpController::CameraTaskHttpController(
     std::shared_ptr<CameraTaskRepository> repository,
     std::shared_ptr<ICameraTaskApiControl> control,
     std::string token_override,
-    std::shared_ptr<CameraProfileRegistry> profile_registry
+    std::shared_ptr<CameraProfileRegistry> profile_registry,
+    AlgorithmRuntimeSnapshotReader algorithm_runtime_reader
 ) : config_(config), repository_(std::move(repository)), control_(std::move(control)),
-    profile_registry_(std::move(profile_registry)), token_(std::move(token_override)) {
+    profile_registry_(std::move(profile_registry)),
+    algorithm_runtime_reader_(std::move(algorithm_runtime_reader)),
+    token_(std::move(token_override)) {
 }
 
 bool CameraTaskHttpController::initialize(std::string& error) {
@@ -527,6 +611,15 @@ void CameraTaskHttpController::registerRoutes(crow::SimpleApp& app) {
         [this](const crow::request& request) { return operationsMetrics(request); });
     CROW_ROUTE(app, "/api/v1/operations/metrics/prometheus")(
         [this](const crow::request& request) { return prometheusMetrics(request); });
+    CROW_ROUTE(app, "/api/v1/operations/callbacks")(
+        [this](const crow::request& request) {
+            return listCallbackDeliveries(request);
+        });
+    CROW_ROUTE(app, "/api/v1/operations/callbacks/<string>/replay")
+        .methods(crow::HTTPMethod::POST)(
+            [this](const crow::request& request, const std::string& id) {
+                return replayCallbackDelivery(request, id);
+            });
 }
 
 CameraTaskHttpHealth CameraTaskHttpController::health() const {
@@ -1674,6 +1767,113 @@ crow::response CameraTaskHttpController::deleteProfile(
     return response;
 }
 
+crow::response CameraTaskHttpController::listCallbackDeliveries(
+    const crow::request& request
+) const {
+    const std::string request_id = makeId("req_");
+    if (!authorized(request)) {
+        return errorResponse(401, "UNAUTHORIZED", request_id);
+    }
+    const char* status_value = request.url_params.get("status");
+    const char* task_value = request.url_params.get("camera_id");
+    const std::string status = status_value ? status_value : "dead_letter";
+    const std::string task_id = task_value ? task_value : "";
+    static const std::set<std::string> statuses{
+        "pending", "delivering", "delivered", "retry", "dead_letter", "all"
+    };
+    if (statuses.count(status) == 0 ||
+        (!task_id.empty() && !safeIdentifier(task_id))) {
+        return errorResponse(400, "INVALID_IDENTIFIER", request_id);
+    }
+    const int limit = queryInt(request, "limit", 20, 1, 200);
+    const int offset = queryInt(request, "offset", 0, 0, 1000000);
+    std::vector<CallbackOutboxRecord> records;
+    std::string error;
+    if (!repository_->listCallbackOutbox(
+            status == "all" ? "" : status,
+            task_id,
+            limit,
+            offset,
+            records,
+            error)) {
+        return errorResponse(503, "STORAGE_UNAVAILABLE", request_id);
+    }
+    json items = json::array();
+    for (const auto& record : records) {
+        items.push_back(callbackOutboxJson(record));
+    }
+    return jsonResponse(200, {
+        {"success", true},
+        {"request_id", request_id},
+        {"status", status},
+        {"camera_id", task_id.empty() ? json(nullptr) : json(task_id)},
+        {"limit", limit},
+        {"offset", offset},
+        {"items", items}
+    });
+}
+
+crow::response CameraTaskHttpController::replayCallbackDelivery(
+    const crow::request& request,
+    const std::string& outbox_id
+) {
+    const std::string request_id = makeId("req_");
+    if (!authorized(request)) {
+        return errorResponse(401, "UNAUTHORIZED", request_id);
+    }
+    long long parsed_id = 0;
+    try {
+        std::size_t consumed = 0;
+        parsed_id = std::stoll(outbox_id, &consumed);
+        if (consumed != outbox_id.size() || parsed_id <= 0) {
+            return errorResponse(400, "INVALID_CALLBACK_REPLAY", request_id);
+        }
+    }
+    catch (...) {
+        return errorResponse(400, "INVALID_CALLBACK_REPLAY", request_id);
+    }
+    int expected_attempt = 0;
+    if (!parseIfMatch(request, expected_attempt)) {
+        return errorResponse(428, "PRECONDITION_REQUIRED", request_id);
+    }
+    if (!request.body.empty()) {
+        const auto input = json::parse(request.body, nullptr, false);
+        if (input.is_discarded() || !input.is_object()) {
+            return errorResponse(400, "INVALID_JSON", request_id);
+        }
+        if (!input.empty()) {
+            return errorResponse(400, "UNKNOWN_FIELD", request_id);
+        }
+    }
+    CallbackOutboxRecord record;
+    std::string code;
+    std::string error;
+    if (!repository_->requeueDeadCallback(
+            parsed_id,
+            expected_attempt,
+            nowMs(),
+            record,
+            code,
+            error)) {
+        if (code == "CALLBACK_OUTBOX_NOT_FOUND") {
+            return errorResponse(404, code, request_id);
+        }
+        if (code == "CALLBACK_REPLAY_CONFLICT") {
+            return errorResponse(409, code, request_id);
+        }
+        if (code == "INVALID_CALLBACK_REPLAY") {
+            return errorResponse(400, code, request_id);
+        }
+        return errorResponse(503, "STORAGE_UNAVAILABLE", request_id);
+    }
+    return jsonResponse(202, {
+        {"success", true},
+        {"request_id", request_id},
+        {"previous_attempt", expected_attempt},
+        {"delivery", callbackOutboxJson(record)}
+    });
+}
+
 crow::response CameraTaskHttpController::operationsMetrics(const crow::request& request) const {
     const std::string request_id = makeId("req_");
     if (!authorized(request)) return errorResponse(401, "UNAUTHORIZED", request_id);
@@ -1728,6 +1928,15 @@ crow::response CameraTaskHttpController::operationsMetrics(const crow::request& 
         static_cast<long long>(space.available) < config_.camera_tasks.storage.min_free_bytes;
     const std::string pressure = free_pressure || (critical_limit > 0 && stats.archive_bytes >= critical_limit)
         ? "critical" : ((high_limit > 0 && stats.archive_bytes >= high_limit) ? "high" : "normal");
+    AlgorithmRuntimeSnapshot runtime;
+    std::string runtime_error;
+    const bool runtime_available = algorithm_runtime_reader_ &&
+        algorithm_runtime_reader_(runtime, runtime_error) &&
+        runtime.generated_at_ms > 0;
+    const int runtime_stale_after_ms =
+        std::max(5000, config_.worker.heartbeat_interval_ms * 3);
+    const bool runtime_stale = !runtime_available ||
+        nowMs() - runtime.generated_at_ms > runtime_stale_after_ms;
     return jsonResponse(200, {
         {"success", true}, {"request_id", request_id}, {"generated_at_ms", nowMs()},
         {"tasks", {
@@ -1743,6 +1952,15 @@ crow::response CameraTaskHttpController::operationsMetrics(const crow::request& 
             {"latest_capture_time_ms", stats.latest_frame_time_ms}
         }},
         {"alerts", {{"total", stats.alerts_total}}},
+        {"callback_outbox", {
+            {"pending", stats.callbacks_pending},
+            {"delivering", stats.callbacks_delivering},
+            {"delivered", stats.callbacks_delivered},
+            {"retry", stats.callbacks_retry},
+            {"dead_letter", stats.callbacks_dead_letter}
+        }},
+        {"algorithm_runtime", algorithmRuntimeJson(
+            runtime, runtime_available, runtime_stale, runtime_error)},
         {"storage", {
             {"filesystem_ok", !fs_error},
             {"capacity_bytes", fs_error ? 0 : static_cast<long long>(space.capacity)},
@@ -1796,6 +2014,14 @@ crow::response CameraTaskHttpController::prometheusMetrics(const crow::request& 
         static_cast<long long>(space.available) < config_.camera_tasks.storage.min_free_bytes;
     const int pressure_level = free_pressure || (critical_limit > 0 && stats.archive_bytes >= critical_limit)
         ? 2 : ((high_limit > 0 && stats.archive_bytes >= high_limit) ? 1 : 0);
+    AlgorithmRuntimeSnapshot runtime;
+    std::string runtime_error;
+    const bool runtime_available = algorithm_runtime_reader_ &&
+        algorithm_runtime_reader_(runtime, runtime_error) &&
+        runtime.generated_at_ms > 0;
+    const bool runtime_stale = !runtime_available ||
+        nowMs() - runtime.generated_at_ms >
+            std::max(5000, config_.worker.heartbeat_interval_ms * 3);
     std::ostringstream output;
     output << "# HELP yolo11_camera_tasks Camera Task definitions by state.\n"
            << "# TYPE yolo11_camera_tasks gauge\n"
@@ -1810,6 +2036,60 @@ crow::response CameraTaskHttpController::prometheusMetrics(const crow::request& 
            << "yolo11_camera_archive_frames " << stats.frames_total << '\n'
            << "# TYPE yolo11_security_alert_events gauge\n"
            << "yolo11_security_alert_events " << stats.alerts_total << '\n'
+           << "# TYPE yolo11_callback_outbox gauge\n"
+           << "yolo11_callback_outbox{state=\"pending\"} "
+           << stats.callbacks_pending << '\n'
+           << "yolo11_callback_outbox{state=\"delivering\"} "
+           << stats.callbacks_delivering << '\n'
+           << "yolo11_callback_outbox{state=\"delivered\"} "
+           << stats.callbacks_delivered << '\n'
+           << "yolo11_callback_outbox{state=\"retry\"} "
+           << stats.callbacks_retry << '\n'
+           << "yolo11_callback_outbox{state=\"dead_letter\"} "
+           << stats.callbacks_dead_letter << '\n'
+           << "# TYPE yolo11_algorithm_runtime_available gauge\n"
+           << "yolo11_algorithm_runtime_available "
+           << (runtime_available ? 1 : 0) << '\n'
+           << "# TYPE yolo11_algorithm_runtime_stale gauge\n"
+           << "yolo11_algorithm_runtime_stale "
+           << (runtime_stale ? 1 : 0) << '\n'
+           << "# TYPE yolo11_algorithm_active_pipelines gauge\n"
+           << "yolo11_algorithm_active_pipelines "
+           << runtime.active_pipelines << '\n'
+           << "# TYPE yolo11_algorithm_inference_workers gauge\n"
+           << "yolo11_algorithm_inference_workers{state=\"configured\"} "
+           << runtime.inference_workers_configured << '\n'
+           << "yolo11_algorithm_inference_workers{state=\"ready\"} "
+           << runtime.inference_workers_ready << '\n'
+           << "# TYPE yolo11_algorithm_inference_jobs_total counter\n"
+           << "yolo11_algorithm_inference_jobs_total{state=\"submitted\"} "
+           << runtime.inference_submitted_jobs << '\n'
+           << "yolo11_algorithm_inference_jobs_total{state=\"replaced\"} "
+           << runtime.inference_replaced_jobs << '\n'
+           << "yolo11_algorithm_inference_jobs_total{state=\"processed\"} "
+           << runtime.inference_processed_jobs << '\n'
+           << "yolo11_algorithm_inference_jobs_total{state=\"failed\"} "
+           << runtime.inference_failed_jobs << '\n'
+           << "yolo11_algorithm_inference_jobs_total{state=\"stale\"} "
+           << runtime.inference_stale_results << '\n'
+           << "# TYPE yolo11_algorithm_alerts_total counter\n"
+           << "yolo11_algorithm_alerts_total{state=\"persisted\"} "
+           << runtime.processor_persisted_alerts << '\n'
+           << "yolo11_algorithm_alerts_total{state=\"duplicate\"} "
+           << runtime.processor_duplicate_alerts << '\n'
+           << "# TYPE yolo11_callback_delivery_total counter\n"
+           << "yolo11_callback_delivery_total{state=\"claimed\"} "
+           << runtime.callback_claimed << '\n'
+           << "yolo11_callback_delivery_total{state=\"delivered\"} "
+           << runtime.callback_delivered << '\n'
+           << "yolo11_callback_delivery_total{state=\"retry\"} "
+           << runtime.callback_retries << '\n'
+           << "yolo11_callback_delivery_total{state=\"dead_letter\"} "
+           << runtime.callback_dead_letters << '\n'
+           << "yolo11_callback_delivery_total{state=\"transport_failure\"} "
+           << runtime.callback_transport_failures << '\n'
+           << "yolo11_callback_delivery_total{state=\"lease_conflict\"} "
+           << runtime.callback_lease_conflicts << '\n'
            << "# TYPE yolo11_camera_archive_bytes gauge\n"
            << "yolo11_camera_archive_bytes " << stats.archive_bytes << '\n'
            << "# TYPE yolo11_camera_storage_available_bytes gauge\n"

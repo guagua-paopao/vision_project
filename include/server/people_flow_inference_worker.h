@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "business/people_flow_repository.h"
+#include "server/algorithm_runtime_snapshot.h"
 #include "server/app_config.h"
 #include "server/model_runner.h"
 #include "server/redis_task_queue.h"
@@ -31,6 +32,8 @@ namespace yolo11_server {
         bool start();
         void stop() noexcept;
         bool running() const;
+        void setAlgorithmRuntimeProvider(
+            AlgorithmRuntimeSnapshotProvider provider);
 
     private:
         void loop();
@@ -57,6 +60,8 @@ namespace yolo11_server {
         std::atomic<bool> session_active_{ false };
         bool runner_initialized_ = false;
         mutable std::mutex state_mutex_;
+        mutable std::mutex algorithm_provider_mutex_;
+        AlgorithmRuntimeSnapshotProvider algorithm_provider_;
         std::string worker_status_ = "starting";
         std::string current_session_id_;
         std::string last_error_;

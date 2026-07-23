@@ -290,6 +290,25 @@ SecurityAlertEventRecord readAlert(sqlite3_stmt* statement) {
     return alert;
 }
 
+CallbackOutboxRecord readCallbackOutbox(sqlite3_stmt* statement) {
+    CallbackOutboxRecord record;
+    record.outbox_id = sqlite3_column_int64(statement, 0);
+    record.event_id = columnText(statement, 1);
+    record.task_id = columnText(statement, 2);
+    record.callback_profile = columnText(statement, 3);
+    record.status = columnText(statement, 4);
+    record.attempt = sqlite3_column_int(statement, 5);
+    record.next_attempt_at_ms = sqlite3_column_int64(statement, 6);
+    record.last_attempt_at_ms = sqlite3_column_int64(statement, 7);
+    record.delivered_at_ms = sqlite3_column_int64(statement, 8);
+    record.last_http_status = sqlite3_column_int(statement, 9);
+    record.last_error_code = columnText(statement, 10);
+    record.response_body_hash = columnText(statement, 11);
+    record.created_at_ms = sqlite3_column_int64(statement, 12);
+    record.updated_at_ms = sqlite3_column_int64(statement, 13);
+    return record;
+}
+
 CameraTaskRunRecord readRun(sqlite3_stmt* statement) {
     CameraTaskRunRecord run;
     run.run_id = columnText(statement, 0);
@@ -1317,6 +1336,123 @@ bool CameraTaskRepository::finishCallbackAttempt(
     return false;
 }
 
+bool CameraTaskRepository::listCallbackOutbox(
+    const std::string& status,
+    const std::string& task_id,
+    int limit,
+    int offset,
+    std::vector<CallbackOutboxRecord>& records,
+    std::string& error
+) const {
+    records.clear();
+    error.clear();
+    static const std::set<std::string> statuses{
+        "", "pending", "delivering", "delivered", "retry", "dead_letter"
+    };
+    if (statuses.count(status) == 0 ||
+        (!task_id.empty() && !validServiceIdentifier(task_id, 160)) ||
+        limit < 1 || limit > 200 || offset < 0 || offset > 1000000) {
+        error = "callback outbox query bounds are invalid";
+        return false;
+    }
+    DbPtr db;
+    if (!openDatabase(config_, db, error)) return false;
+    StatementPtr statement;
+    if (!prepare(db.get(),
+        "SELECT o.outbox_id,o.event_id,e.task_id,o.callback_profile,o.status,o.attempt,"
+        "o.next_attempt_at_ms,COALESCE(o.last_attempt_at_ms,0),"
+        "COALESCE(o.delivered_at_ms,0),COALESCE(o.last_http_status,0),"
+        "COALESCE(o.last_error_code,''),COALESCE(o.response_body_hash,''),"
+        "o.created_at_ms,o.updated_at_ms "
+        "FROM callback_outbox o JOIN security_alert_events e ON e.event_id=o.event_id "
+        "WHERE (?='' OR o.status=?) AND (?='' OR e.task_id=?) "
+        "ORDER BY o.updated_at_ms DESC,o.outbox_id DESC LIMIT ? OFFSET ?;",
+        statement, error)) {
+        return false;
+    }
+    bindText(statement.get(), 1, status);
+    bindText(statement.get(), 2, status);
+    bindText(statement.get(), 3, task_id);
+    bindText(statement.get(), 4, task_id);
+    sqlite3_bind_int(statement.get(), 5, limit);
+    sqlite3_bind_int(statement.get(), 6, offset);
+    int result = SQLITE_ROW;
+    while ((result = sqlite3_step(statement.get())) == SQLITE_ROW) {
+        records.push_back(readCallbackOutbox(statement.get()));
+    }
+    if (result == SQLITE_DONE) return true;
+    error = sqlite3_errmsg(db.get());
+    return false;
+}
+
+bool CameraTaskRepository::requeueDeadCallback(
+    long long outbox_id,
+    int expected_attempt,
+    long long update_time_ms,
+    CallbackOutboxRecord& record,
+    std::string& error_code,
+    std::string& error
+) const {
+    record = {};
+    error_code.clear();
+    error.clear();
+    if (outbox_id <= 0 || expected_attempt <= 0 || update_time_ms <= 0) {
+        error_code = "INVALID_CALLBACK_REPLAY";
+        error = "callback replay bounds are invalid";
+        return false;
+    }
+    DbPtr db;
+    if (!openDatabase(config_, db, error)) return false;
+    StatementPtr statement;
+    if (!prepare(db.get(),
+        "UPDATE callback_outbox o SET status='retry',attempt=0,"
+        "next_attempt_at_ms=?,delivered_at_ms=NULL,updated_at_ms=? "
+        "WHERE o.outbox_id=? AND o.status='dead_letter' AND o.attempt=? "
+        "RETURNING o.outbox_id,o.event_id,"
+        "(SELECT e.task_id FROM security_alert_events e WHERE e.event_id=o.event_id),"
+        "o.callback_profile,o.status,o.attempt,o.next_attempt_at_ms,"
+        "COALESCE(o.last_attempt_at_ms,0),COALESCE(o.delivered_at_ms,0),"
+        "COALESCE(o.last_http_status,0),COALESCE(o.last_error_code,''),"
+        "COALESCE(o.response_body_hash,''),o.created_at_ms,o.updated_at_ms;",
+        statement, error)) {
+        return false;
+    }
+    sqlite3_bind_int64(statement.get(), 1, update_time_ms);
+    sqlite3_bind_int64(statement.get(), 2, update_time_ms);
+    sqlite3_bind_int64(statement.get(), 3, outbox_id);
+    sqlite3_bind_int(statement.get(), 4, expected_attempt);
+    const int result = sqlite3_step(statement.get());
+    if (result == SQLITE_ROW) {
+        record = readCallbackOutbox(statement.get());
+        return true;
+    }
+    if (result != SQLITE_DONE) {
+        error = sqlite3_errmsg(db.get());
+        return false;
+    }
+
+    StatementPtr current;
+    if (!prepare(db.get(),
+        "SELECT status,attempt FROM callback_outbox WHERE outbox_id=?;",
+        current, error)) {
+        return false;
+    }
+    sqlite3_bind_int64(current.get(), 1, outbox_id);
+    const int current_result = sqlite3_step(current.get());
+    if (current_result == SQLITE_DONE) {
+        error_code = "CALLBACK_OUTBOX_NOT_FOUND";
+        error = "callback outbox entry was not found";
+        return false;
+    }
+    if (current_result != SQLITE_ROW) {
+        error = sqlite3_errmsg(db.get());
+        return false;
+    }
+    error_code = "CALLBACK_REPLAY_CONFLICT";
+    error = "callback outbox status or attempt changed";
+    return false;
+}
+
 bool CameraTaskRepository::getIdempotencyRecord(
     const std::string& operation_scope,
     const std::string& idempotency_key,
@@ -1411,6 +1547,11 @@ bool CameraTaskRepository::stats(CameraTaskRepositoryStats& stats, std::string& 
         "(SELECT COUNT(*) FROM camera_task_runs WHERE status='failed'),"
         "(SELECT COUNT(*) FROM camera_frames),"
         "(SELECT COUNT(*) FROM security_alert_events),"
+        "(SELECT COUNT(*) FROM callback_outbox WHERE status='pending'),"
+        "(SELECT COUNT(*) FROM callback_outbox WHERE status='delivering'),"
+        "(SELECT COUNT(*) FROM callback_outbox WHERE status='delivered'),"
+        "(SELECT COUNT(*) FROM callback_outbox WHERE status='retry'),"
+        "(SELECT COUNT(*) FROM callback_outbox WHERE status='dead_letter'),"
         "(SELECT COALESCE(SUM(size_bytes),0) FROM camera_frames),"
         "(SELECT COALESCE(MAX(capture_time_ms),0) FROM camera_frames);",
         statement, error)) return false;
@@ -1426,8 +1567,13 @@ bool CameraTaskRepository::stats(CameraTaskRepositoryStats& stats, std::string& 
     stats.runs_failed = sqlite3_column_int64(statement.get(), 5);
     stats.frames_total = sqlite3_column_int64(statement.get(), 6);
     stats.alerts_total = sqlite3_column_int64(statement.get(), 7);
-    stats.archive_bytes = sqlite3_column_int64(statement.get(), 8);
-    stats.latest_frame_time_ms = sqlite3_column_int64(statement.get(), 9);
+    stats.callbacks_pending = sqlite3_column_int64(statement.get(), 8);
+    stats.callbacks_delivering = sqlite3_column_int64(statement.get(), 9);
+    stats.callbacks_delivered = sqlite3_column_int64(statement.get(), 10);
+    stats.callbacks_retry = sqlite3_column_int64(statement.get(), 11);
+    stats.callbacks_dead_letter = sqlite3_column_int64(statement.get(), 12);
+    stats.archive_bytes = sqlite3_column_int64(statement.get(), 13);
+    stats.latest_frame_time_ms = sqlite3_column_int64(statement.get(), 14);
     return true;
 }
 

@@ -113,7 +113,15 @@ json sessionJson(const PeopleFlowSessionStatus& item) {
 PeopleFlowHttpServer::PeopleFlowHttpServer(const AppConfig& config)
     : config_(config), redis_(config.redis) {
     if (config_.camera_tasks.enabled) {
-        camera_task_controller_ = std::make_unique<CameraTaskHttpController>(config_);
+        camera_task_controller_ = std::make_unique<CameraTaskHttpController>(
+            config_,
+            std::shared_ptr<CameraTaskRepository>{},
+            std::shared_ptr<ICameraTaskApiControl>{},
+            std::string{},
+            std::shared_ptr<CameraProfileRegistry>{},
+            [this](AlgorithmRuntimeSnapshot& runtime, std::string& error) {
+                return readAlgorithmRuntime(runtime, error);
+            });
     }
 }
 
@@ -221,7 +229,9 @@ crow::response PeopleFlowHttpServer::health() const {
             {"output_root_writable", camera.output_root_writable},
             {"token_configured", camera.token_configured},
             {"worker_num_valid", camera.worker_num_valid},
-            {"callback_config_valid", camera.callback_config_valid}
+            {"callback_config_valid", camera.callback_config_valid},
+            {"analysis_enabled", config_.analysis.enabled},
+            {"callbacks_enabled", config_.callbacks.enabled}
         }}
     });
 }
@@ -246,27 +256,85 @@ crow::response PeopleFlowHttpServer::ready() const {
     const auto camera = camera_task_controller_
         ? camera_task_controller_->health() : CameraTaskHttpHealth{};
     bool camera_role_alive = !camera.enabled;
+    AlgorithmRuntimeSnapshot algorithm_runtime;
     if (camera.enabled) {
         for (const auto& worker : workers) {
             if (worker.alive && worker.worker_kind == "vision_host" &&
                 worker.task_kind.find("camera_frame") != std::string::npos) {
                 camera_role_alive = true;
-                break;
+                if (worker.algorithm_runtime.generated_at_ms >
+                    algorithm_runtime.generated_at_ms) {
+                    algorithm_runtime = worker.algorithm_runtime;
+                }
             }
         }
     }
+    const bool algorithm_runtime_available =
+        !camera.enabled || algorithm_runtime.generated_at_ms > 0;
+    const bool algorithm_runtime_fresh = !camera.enabled ||
+        (algorithm_runtime_available &&
+            nowMs() - algorithm_runtime.generated_at_ms <=
+                std::max(5000, config_.worker.heartbeat_interval_ms * 3));
+    const bool inference_pool_ready =
+        !camera.enabled || !config_.analysis.enabled ||
+        (algorithm_runtime.inference_running &&
+            algorithm_runtime.processor_running &&
+            algorithm_runtime.inference_workers_configured ==
+                config_.analysis.inference_workers &&
+            algorithm_runtime.inference_workers_ready ==
+                config_.analysis.inference_workers);
+    const bool callback_delivery_ready =
+        !camera.enabled || !config_.callbacks.enabled ||
+        (algorithm_runtime.callback_running &&
+            algorithm_runtime.callback_profiles_ready > 0);
     const bool camera_ready = !camera.enabled ||
         (camera.initialized && camera.token_configured && camera.storage_ok &&
             camera.output_root_writable && camera.worker_num_valid &&
-            camera.callback_config_valid && camera_role_alive);
+            camera.callback_config_valid && camera_role_alive &&
+            algorithm_runtime_available && algorithm_runtime_fresh &&
+            algorithm_runtime.host_running && inference_pool_ready &&
+            callback_delivery_ready);
     const bool is_ready = redis_ok && workers_ok && alive >= config_.worker.min_alive_workers && camera_ready;
     return jsonResponse(is_ready ? 200 : 503, {
         {"success", is_ready}, {"ready", is_ready}, {"redis_ok", redis_ok},
         {"alive_workers", alive}, {"required_workers", config_.worker.min_alive_workers},
         {"worker_error", worker_error}, {"workers", worker_items},
         {"security_enabled", config_.people_flow.security.enabled},
-        {"camera_tasks_ready", camera_ready}, {"camera_frame_role_alive", camera_role_alive}
+        {"camera_tasks_ready", camera_ready},
+        {"camera_frame_role_alive", camera_role_alive},
+        {"algorithm_runtime_available", algorithm_runtime_available},
+        {"algorithm_runtime_fresh", algorithm_runtime_fresh},
+        {"algorithm_runtime_generated_at_ms", algorithm_runtime.generated_at_ms},
+        {"inference_pool_ready", inference_pool_ready},
+        {"callback_delivery_ready", callback_delivery_ready}
     });
+}
+
+bool PeopleFlowHttpServer::readAlgorithmRuntime(
+    AlgorithmRuntimeSnapshot& runtime,
+    std::string& error
+) const {
+    runtime = {};
+    std::vector<WorkerHeartbeatRecord> workers;
+    if (!redis_.getWorkerHeartbeats(
+            config_.worker.consumer_name_prefix,
+            config_.worker.worker_num,
+            workers,
+            error)) {
+        return false;
+    }
+    for (const auto& worker : workers) {
+        if (!worker.alive || worker.worker_kind != "vision_host") continue;
+        if (worker.algorithm_runtime.generated_at_ms > runtime.generated_at_ms) {
+            runtime = worker.algorithm_runtime;
+        }
+    }
+    if (runtime.generated_at_ms <= 0) {
+        error = "ALGORITHM_RUNTIME_UNAVAILABLE";
+        return false;
+    }
+    error.clear();
+    return true;
 }
 
 crow::response PeopleFlowHttpServer::start(const crow::request& request) {

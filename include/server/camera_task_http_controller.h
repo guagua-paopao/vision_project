@@ -7,6 +7,7 @@
 #include <crow.h>
 
 #include "business/camera_task_repository.h"
+#include "server/algorithm_runtime_snapshot.h"
 #include "server/app_config.h"
 #include "server/camera_profile_registry.h"
 #include "server/camera_task_api_control.h"
@@ -30,7 +31,8 @@ public:
         std::shared_ptr<CameraTaskRepository> repository = {},
         std::shared_ptr<ICameraTaskApiControl> control = {},
         std::string token_override = {},
-        std::shared_ptr<CameraProfileRegistry> profile_registry = {}
+        std::shared_ptr<CameraProfileRegistry> profile_registry = {},
+        AlgorithmRuntimeSnapshotReader algorithm_runtime_reader = {}
     );
 
     bool initialize(std::string& error);
@@ -95,6 +97,11 @@ public:
     );
     crow::response operationsMetrics(const crow::request& request) const;
     crow::response prometheusMetrics(const crow::request& request) const;
+    crow::response listCallbackDeliveries(
+        const crow::request& request) const;
+    crow::response replayCallbackDelivery(
+        const crow::request& request,
+        const std::string& outbox_id);
 
 private:
     bool authorized(const crow::request& request) const;
@@ -110,6 +117,7 @@ private:
     std::shared_ptr<CameraTaskRepository> repository_;
     std::shared_ptr<ICameraTaskApiControl> control_;
     std::shared_ptr<CameraProfileRegistry> profile_registry_;
+    AlgorithmRuntimeSnapshotReader algorithm_runtime_reader_;
     std::string token_;
     // Camera lifecycle mutations may call one another (create/update -> start),
     // so a recursive process-local lock serializes optimistic checks and their

@@ -1,0 +1,767 @@
+{
+  "info": {
+    "_postman_id": "94cb6392-d85c-4c03-8e1c-visionprojectp5",
+    "name": "Vision Project P5 - Algorithm Service",
+    "description": "Camera CRUD/lifecycle, unified observability, alert delivery operations, and local callback receiver checks. Configure the companion environment before running. The Dead-letter replay request is intentionally manual because it requires an observed outbox_id and attempt.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{admin_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "camera_etag",
+      "value": "1"
+    },
+    {
+      "key": "run_id",
+      "value": ""
+    },
+    {
+      "key": "outbox_id",
+      "value": ""
+    },
+    {
+      "key": "outbox_attempt",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "01 Service status",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Process dependencies and static camera/callback configuration."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('health response is explicit', function () {",
+                  "  pm.expect([200, 503]).to.include(pm.response.code);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('camera_tasks');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ready",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ready"
+              ]
+            },
+            "description": "Requires fresh VisionWorkerHost heartbeat, fixed inference pool, algorithm processor, and callback worker when enabled."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('service is ready for the lifecycle run', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.ready).to.eql(true);",
+                  "  pm.expect(body.algorithm_runtime_available).to.eql(true);",
+                  "  pm.expect(body.algorithm_runtime_fresh).to.eql(true);",
+                  "  pm.expect(body.inference_pool_ready).to.eql(true);",
+                  "  pm.expect(body.callback_delivery_ready).to.eql(true);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List deployment camera profiles",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/camera-profiles",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "camera-profiles"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('configured profile is visible without URI values', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const text = pm.response.text();",
+                  "  pm.expect(text).not.to.include('rtsp://');",
+                  "  pm.expect(pm.response.json().items.map(x => x.profile_id)).to.include(pm.environment.get('camera_profile'));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 Camera CRUD and lifecycle",
+      "item": [
+        {
+          "name": "Create stopped camera",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.variables.set('create_idempotency_key', 'postman-create-' + Date.now());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('camera definition created', function () {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(pm.response.json().camera.camera_id).to.eql(pm.environment.get('camera_id'));",
+                  "  pm.collectionVariables.set('camera_etag', pm.response.headers.get('ETag').replaceAll('\"', ''));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{create_idempotency_key}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"camera_id\": \"{{camera_id}}\",\n  \"name\": \"Postman P5 integration camera\",\n  \"camera_profile\": \"{{camera_profile}}\",\n  \"desired_state\": \"stopped\",\n  \"frame_interval_ms\": 1000,\n  \"output_mode\": \"latest\",\n  \"jpeg_quality\": 90,\n  \"max_width\": 1280,\n  \"max_height\": 720,\n  \"retention_days\": 7,\n  \"max_saved_frames\": 1000,\n  \"analysis\": {\n    \"enabled\": true,\n    \"target_infer_fps\": 5.0,\n    \"algorithm_profile\": \"security_default\",\n    \"algorithms\": [\"people_flow\", \"electronic_fence\"]\n  },\n  \"callback_profile\": \"{{callback_profile}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/cameras",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cameras"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Read camera",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/cameras/{{camera_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cameras",
+                "{{camera_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('camera contract round-trips', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json().camera;",
+                  "  pm.expect(body.desired_state).to.eql('stopped');",
+                  "  pm.expect(body.callback_profile).to.eql(pm.environment.get('callback_profile'));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update camera",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "\"{{camera_etag}}\""
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"frame_interval_ms\": 500,\n  \"jpeg_quality\": 85\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/cameras/{{camera_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cameras",
+                "{{camera_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('optimistic update succeeds', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.collectionVariables.set('camera_etag', pm.response.headers.get('ETag').replaceAll('\"', ''));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Start camera",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.variables.set('start_idempotency_key', 'postman-start-' + Date.now());"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('camera run accepted', function () {",
+                  "  pm.expect([200, 202]).to.include(pm.response.code);",
+                  "  pm.collectionVariables.set('run_id', pm.response.json().run_id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{start_idempotency_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/cameras/{{camera_id}}/start",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cameras",
+                "{{camera_id}}",
+                "start"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Camera runtime status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/cameras/{{camera_id}}/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cameras",
+                "{{camera_id}}",
+                "status"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status exposes pipeline and analysis', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('pipeline');",
+                  "  pm.expect(body.analysis.enabled).to.eql(true);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Run history",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/cameras/{{camera_id}}/runs?limit=20&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cameras",
+                "{{camera_id}}",
+                "runs"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('run audit is durable', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().items.length).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Camera alerts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/cameras/{{camera_id}}/alerts?minimum_severity=1&limit=20&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cameras",
+                "{{camera_id}}",
+                "alerts"
+              ],
+              "query": [
+                {
+                  "key": "minimum_severity",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('alert audit endpoint is available before cleanup', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json()).to.have.property('items');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stop camera",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/cameras/{{camera_id}}/stop",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cameras",
+                "{{camera_id}}",
+                "stop"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('stop is accepted or already idle', function () {",
+                  "  pm.expect([200, 202]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete camera",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "\"{{camera_etag}}\""
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/cameras/{{camera_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cameras",
+                "{{camera_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('camera is soft-deleted', function () {",
+                  "  pm.expect([202, 204]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 Alerts and operations",
+      "item": [
+        {
+          "name": "Unified JSON metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/operations/metrics",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "operations",
+                "metrics"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('durable and hot metrics are unified', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('callback_outbox');",
+                  "  pm.expect(body.algorithm_runtime.available).to.eql(true);",
+                  "  pm.expect(body.algorithm_runtime).to.have.property('inference');",
+                  "  pm.expect(body.algorithm_runtime).to.have.property('processor');",
+                  "  pm.expect(body.algorithm_runtime).to.have.property('callbacks');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Prometheus metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/operations/metrics/prometheus",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "operations",
+                "metrics",
+                "prometheus"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Prometheus contract is present', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.text()).to.include('yolo11_algorithm_runtime_available');",
+                  "  pm.expect(pm.response.text()).to.include('yolo11_callback_outbox');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List dead-letter deliveries",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/operations/callbacks?status=dead_letter&limit=20&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "operations",
+                "callbacks"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "dead_letter"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('dead-letter query is bounded', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const items = pm.response.json().items;",
+                  "  if (items.length > 0) {",
+                  "    pm.collectionVariables.set('outbox_id', String(items[0].outbox_id));",
+                  "    pm.collectionVariables.set('outbox_attempt', String(items[0].attempt));",
+                  "  }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Replay selected dead-letter (manual)",
+          "disabled": true,
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "If-Match",
+                "value": "\"{{outbox_attempt}}\""
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/operations/callbacks/{{outbox_id}}/replay",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "operations",
+                "callbacks",
+                "{{outbox_id}}",
+                "replay"
+              ]
+            },
+            "description": "Run manually only after inspecting the selected dead-letter. The observed attempt is supplied as If-Match to prevent stale or duplicate replay."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('selected dead-letter is queued once', function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  pm.expect(pm.response.json().delivery.status).to.eql('retry');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 Mock callback backend",
+      "auth": {
+        "type": "noauth"
+      },
+      "item": [
+        {
+          "name": "Mock health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{mock_callback_url}}/health",
+              "host": [
+                "{{mock_callback_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Accepted callback events",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mock_control_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{mock_callback_url}}/api/test/events",
+              "host": [
+                "{{mock_callback_url}}"
+              ],
+              "path": [
+                "api",
+                "test",
+                "events"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('mock receiver query is authenticated', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json()).to.have.property('items');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset mock events",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mock_control_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{mock_callback_url}}/api/test/reset",
+              "host": [
+                "{{mock_callback_url}}"
+              ],
+              "path": [
+                "api",
+                "test",
+                "reset"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -17,6 +17,11 @@ struct CameraTaskRepositoryStats {
     long long runs_failed = 0;
     long long frames_total = 0;
     long long alerts_total = 0;
+    long long callbacks_pending = 0;
+    long long callbacks_delivering = 0;
+    long long callbacks_delivered = 0;
+    long long callbacks_retry = 0;
+    long long callbacks_dead_letter = 0;
     long long archive_bytes = 0;
     long long latest_frame_time_ms = 0;
 };
@@ -174,6 +179,22 @@ public:
         int http_status,
         const std::string& error_code,
         const std::string& response_body_hash,
+        std::string& error
+    ) const;
+    bool listCallbackOutbox(
+        const std::string& status,
+        const std::string& task_id,
+        int limit,
+        int offset,
+        std::vector<CallbackOutboxRecord>& records,
+        std::string& error
+    ) const;
+    bool requeueDeadCallback(
+        long long outbox_id,
+        int expected_attempt,
+        long long update_time_ms,
+        CallbackOutboxRecord& record,
+        std::string& error_code,
         std::string& error
     ) const;
 

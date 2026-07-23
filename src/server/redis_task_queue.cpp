@@ -2634,7 +2634,38 @@ namespace yolo11_server {
             "failed_count %lld "
             "start_time_ms %lld "
             "last_heartbeat_ms %lld "
-            "last_error %b",
+            "last_error %b "
+            "algorithm_generated_at_ms %lld "
+            "algorithm_host_running %d "
+            "algorithm_active_pipelines %lld "
+            "algorithm_inference_configured %d "
+            "algorithm_inference_running %d "
+            "algorithm_inference_workers_configured %d "
+            "algorithm_inference_workers_ready %d "
+            "algorithm_inference_active_cameras %lld "
+            "algorithm_inference_pending_cameras %lld "
+            "algorithm_inference_submitted_jobs %lld "
+            "algorithm_inference_replaced_jobs %lld "
+            "algorithm_inference_processed_jobs %lld "
+            "algorithm_inference_failed_jobs %lld "
+            "algorithm_inference_stale_results %lld "
+            "algorithm_processor_running %d "
+            "algorithm_processor_active_sessions %lld "
+            "algorithm_processor_processed_frames %lld "
+            "algorithm_processor_persisted_alerts %lld "
+            "algorithm_processor_duplicate_alerts %lld "
+            "algorithm_processor_failed_frames %lld "
+            "algorithm_callbacks_configured %d "
+            "algorithm_callback_running %d "
+            "algorithm_callback_profiles_ready %d "
+            "algorithm_callback_claimed %lld "
+            "algorithm_callback_delivered %lld "
+            "algorithm_callback_retries %lld "
+            "algorithm_callback_dead_letters %lld "
+            "algorithm_callback_transport_failures %lld "
+            "algorithm_callback_lease_conflicts %lld "
+            "algorithm_callback_last_success_at_ms %lld "
+            "algorithm_callback_last_error_code %b",
             key.c_str(), key.size(),
             heartbeat.consumer_name.c_str(), heartbeat.consumer_name.size(),
             heartbeat.pid.c_str(), heartbeat.pid.size(),
@@ -2656,7 +2687,39 @@ namespace yolo11_server {
             heartbeat.failed_count,
             heartbeat.start_time_ms,
             heartbeat.last_heartbeat_ms,
-            heartbeat.last_error.c_str(), heartbeat.last_error.size()
+            heartbeat.last_error.c_str(), heartbeat.last_error.size(),
+            heartbeat.algorithm_runtime.generated_at_ms,
+            heartbeat.algorithm_runtime.host_running ? 1 : 0,
+            heartbeat.algorithm_runtime.active_pipelines,
+            heartbeat.algorithm_runtime.inference_configured ? 1 : 0,
+            heartbeat.algorithm_runtime.inference_running ? 1 : 0,
+            heartbeat.algorithm_runtime.inference_workers_configured,
+            heartbeat.algorithm_runtime.inference_workers_ready,
+            heartbeat.algorithm_runtime.inference_active_cameras,
+            heartbeat.algorithm_runtime.inference_pending_cameras,
+            heartbeat.algorithm_runtime.inference_submitted_jobs,
+            heartbeat.algorithm_runtime.inference_replaced_jobs,
+            heartbeat.algorithm_runtime.inference_processed_jobs,
+            heartbeat.algorithm_runtime.inference_failed_jobs,
+            heartbeat.algorithm_runtime.inference_stale_results,
+            heartbeat.algorithm_runtime.processor_running ? 1 : 0,
+            heartbeat.algorithm_runtime.processor_active_sessions,
+            heartbeat.algorithm_runtime.processor_processed_frames,
+            heartbeat.algorithm_runtime.processor_persisted_alerts,
+            heartbeat.algorithm_runtime.processor_duplicate_alerts,
+            heartbeat.algorithm_runtime.processor_failed_frames,
+            heartbeat.algorithm_runtime.callbacks_configured ? 1 : 0,
+            heartbeat.algorithm_runtime.callback_running ? 1 : 0,
+            heartbeat.algorithm_runtime.callback_profiles_ready,
+            heartbeat.algorithm_runtime.callback_claimed,
+            heartbeat.algorithm_runtime.callback_delivered,
+            heartbeat.algorithm_runtime.callback_retries,
+            heartbeat.algorithm_runtime.callback_dead_letters,
+            heartbeat.algorithm_runtime.callback_transport_failures,
+            heartbeat.algorithm_runtime.callback_lease_conflicts,
+            heartbeat.algorithm_runtime.callback_last_success_at_ms,
+            heartbeat.algorithm_runtime.callback_last_error_code.c_str(),
+            heartbeat.algorithm_runtime.callback_last_error_code.size()
         );
         if (replyIsError(hset_reply.get(), error, context_)) {
             return false;
@@ -2732,6 +2795,69 @@ namespace yolo11_server {
                 record.start_time_ms = parseLongLong(getValue("start_time_ms"));
                 record.last_heartbeat_ms = parseLongLong(getValue("last_heartbeat_ms"));
                 record.last_error = getValue("last_error");
+                auto& runtime = record.algorithm_runtime;
+                runtime.generated_at_ms =
+                    parseLongLong(getValue("algorithm_generated_at_ms"));
+                runtime.host_running =
+                    parseLongLong(getValue("algorithm_host_running")) != 0;
+                runtime.active_pipelines =
+                    parseLongLong(getValue("algorithm_active_pipelines"));
+                runtime.inference_configured =
+                    parseLongLong(getValue("algorithm_inference_configured")) != 0;
+                runtime.inference_running =
+                    parseLongLong(getValue("algorithm_inference_running")) != 0;
+                runtime.inference_workers_configured = static_cast<int>(
+                    parseLongLong(getValue("algorithm_inference_workers_configured")));
+                runtime.inference_workers_ready = static_cast<int>(
+                    parseLongLong(getValue("algorithm_inference_workers_ready")));
+                runtime.inference_active_cameras =
+                    parseLongLong(getValue("algorithm_inference_active_cameras"));
+                runtime.inference_pending_cameras =
+                    parseLongLong(getValue("algorithm_inference_pending_cameras"));
+                runtime.inference_submitted_jobs =
+                    parseLongLong(getValue("algorithm_inference_submitted_jobs"));
+                runtime.inference_replaced_jobs =
+                    parseLongLong(getValue("algorithm_inference_replaced_jobs"));
+                runtime.inference_processed_jobs =
+                    parseLongLong(getValue("algorithm_inference_processed_jobs"));
+                runtime.inference_failed_jobs =
+                    parseLongLong(getValue("algorithm_inference_failed_jobs"));
+                runtime.inference_stale_results =
+                    parseLongLong(getValue("algorithm_inference_stale_results"));
+                runtime.processor_running =
+                    parseLongLong(getValue("algorithm_processor_running")) != 0;
+                runtime.processor_active_sessions =
+                    parseLongLong(getValue("algorithm_processor_active_sessions"));
+                runtime.processor_processed_frames =
+                    parseLongLong(getValue("algorithm_processor_processed_frames"));
+                runtime.processor_persisted_alerts =
+                    parseLongLong(getValue("algorithm_processor_persisted_alerts"));
+                runtime.processor_duplicate_alerts =
+                    parseLongLong(getValue("algorithm_processor_duplicate_alerts"));
+                runtime.processor_failed_frames =
+                    parseLongLong(getValue("algorithm_processor_failed_frames"));
+                runtime.callbacks_configured =
+                    parseLongLong(getValue("algorithm_callbacks_configured")) != 0;
+                runtime.callback_running =
+                    parseLongLong(getValue("algorithm_callback_running")) != 0;
+                runtime.callback_profiles_ready = static_cast<int>(
+                    parseLongLong(getValue("algorithm_callback_profiles_ready")));
+                runtime.callback_claimed =
+                    parseLongLong(getValue("algorithm_callback_claimed"));
+                runtime.callback_delivered =
+                    parseLongLong(getValue("algorithm_callback_delivered"));
+                runtime.callback_retries =
+                    parseLongLong(getValue("algorithm_callback_retries"));
+                runtime.callback_dead_letters =
+                    parseLongLong(getValue("algorithm_callback_dead_letters"));
+                runtime.callback_transport_failures =
+                    parseLongLong(getValue("algorithm_callback_transport_failures"));
+                runtime.callback_lease_conflicts =
+                    parseLongLong(getValue("algorithm_callback_lease_conflicts"));
+                runtime.callback_last_success_at_ms =
+                    parseLongLong(getValue("algorithm_callback_last_success_at_ms"));
+                runtime.callback_last_error_code =
+                    getValue("algorithm_callback_last_error_code");
                 if (record.last_heartbeat_ms > 0) {
                     record.last_heartbeat_age_ms = std::max(0LL, now_ms - record.last_heartbeat_ms);
                 }

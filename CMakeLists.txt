@@ -282,6 +282,32 @@ if(WIN32)
 endif()
 add_test(NAME callback_http_transport_test COMMAND callback_http_transport_test)
 
+add_executable(algorithm_runtime_heartbeat_test
+    tests/algorithm_runtime_heartbeat_test.cpp)
+target_include_directories(algorithm_runtime_heartbeat_test PRIVATE
+    "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(algorithm_runtime_heartbeat_test PRIVATE
+    people_flow_redis app_support)
+add_test(NAME algorithm_runtime_heartbeat_test
+    COMMAND algorithm_runtime_heartbeat_test)
+set_tests_properties(algorithm_runtime_heartbeat_test PROPERTIES
+    SKIP_RETURN_CODE 77)
+
+add_executable(algorithm_service_integration_test
+    tests/algorithm_service_integration_test.cpp)
+target_include_directories(algorithm_service_integration_test PRIVATE
+    "${PROJECT_INCLUDE_DIR}" "${PROJECT_PLUGIN_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(algorithm_service_integration_test PRIVATE
+    camera_task_http camera_algorithm_runtime callback_delivery_runtime
+    ${OpenCV_LIBS})
+if(WIN32)
+    target_link_libraries(algorithm_service_integration_test PRIVATE ws2_32)
+endif()
+add_test(NAME algorithm_service_integration_test
+    COMMAND algorithm_service_integration_test)
+set_tests_properties(algorithm_service_integration_test PROPERTIES
+    SKIP_RETURN_CODE 77)
+
 add_executable(camera_task_repository_test tests/camera_task_repository_test.cpp)
 target_include_directories(camera_task_repository_test PRIVATE "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(camera_task_repository_test PRIVATE camera_task_storage)

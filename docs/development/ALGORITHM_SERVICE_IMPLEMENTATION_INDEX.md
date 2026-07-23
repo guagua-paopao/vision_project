@@ -26,7 +26,7 @@ are recorded here.
 | P2 | Per-camera `CameraPipeline` lifecycle | Complete | [P2 CameraPipeline](ALGORITHM_SERVICE_P2_CAMERA_PIPELINE.md) |
 | P3 | Fixed inference worker pool | Complete | [P3 inference pool](ALGORITHM_SERVICE_P3_INFERENCE_POOL.md) |
 | P4 | Durable alert callback | Complete | [P4 alert callback](ALGORITHM_SERVICE_P4_ALERT_CALLBACK.md) |
-| P5 | Integration, observability, and Postman | Planned | `ALGORITHM_SERVICE_P5_INTEGRATION.md` |
+| P5 | Integration, observability, and Postman | Complete | [P5 integration](ALGORITHM_SERVICE_P5_INTEGRATION.md) |
 | P6 | Hardware acceptance and release | Planned | `ALGORITHM_SERVICE_P6_RELEASE.md` |
 
 ## Current baseline
@@ -43,11 +43,16 @@ are recorded here.
   0 skipped, 8.33 seconds.
 - P4 exit CTest on disposable PostgreSQL 17: 16 tests, 16 passed, 0 failed,
   0 skipped, 9.38 seconds.
+- P5 exit CTest on disposable PostgreSQL 17 and Redis 7: 18 tests, 18 passed,
+  0 failed, 0 skipped, 10.55 seconds.
 - P3 runtime invariant: one Pipeline thread per active camera, plus a
   startup-fixed pool of `analysis.inference_workers` model runners.
 - P4 runtime invariant: alert persistence and HTTP delivery are decoupled by a
   PostgreSQL outbox with leased, fenced claims and bounded retry/dead-letter
   behavior.
+- P5 runtime invariant: process-local Pipeline/inference/Processor/callback
+  snapshots cross the process boundary only as expiring Redis heartbeat data;
+  durable operations totals and replay state remain in PostgreSQL.
 - Historical P0-P2 integration: commit `1775b32`, merged pull request #1.
 - P2 acceptance patch: branch `agent/p2-camera-pipeline`, commit `dbd4ab2`,
   draft pull request #3.
@@ -55,6 +60,8 @@ are recorded here.
   `ab780ab`, draft pull request #2 stacked on the P2 branch.
 - P4 implementation: branch `agent/p4-durable-callback`, commit `f773296`,
   draft pull request #4 stacked on the P3 branch.
+- P5 implementation: `agent/p5-integration-observability` (publication
+  checkpoint is recorded in the P5 phase record).
 
 ## Completion definition
 

@@ -116,11 +116,16 @@ struct SecurityAlertEventRecord {
 struct CallbackOutboxRecord {
     long long outbox_id = 0;
     std::string event_id;
+    std::string task_id;
     std::string callback_profile;
     std::string status;
     int attempt = 0;
     long long next_attempt_at_ms = 0;
     long long last_attempt_at_ms = 0;
+    long long delivered_at_ms = 0;
+    int last_http_status = 0;
+    std::string last_error_code;
+    std::string response_body_hash;
     long long created_at_ms = 0;
     long long updated_at_ms = 0;
 };

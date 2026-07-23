@@ -25,7 +25,8 @@ $executables = @(
     "camera_storage_policy_test.exe",
     "camera_task_http_contract_test.exe",
     "camera_algorithm_processor_test.exe",
-    "callback_delivery_worker_test.exe"
+    "callback_delivery_worker_test.exe",
+    "algorithm_service_integration_test.exe"
 )
 foreach ($name in $executables) {
     $testExe = Join-Path $buildPath $name

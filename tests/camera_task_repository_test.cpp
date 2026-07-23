@@ -220,8 +220,13 @@ int main() {
         "an idempotency key cannot be overwritten");
 
     CameraTaskRepositoryStats stats;
-    require(repository.stats(stats, error) && stats.alerts_total == 1,
-        "repository metrics must include deduplicated alert count");
+    require(repository.stats(stats, error) && stats.alerts_total == 1 &&
+            stats.callbacks_pending == 1 &&
+            stats.callbacks_delivering == 0 &&
+            stats.callbacks_delivered == 0 &&
+            stats.callbacks_retry == 0 &&
+            stats.callbacks_dead_letter == 0,
+        "repository metrics must include alert and durable callback state");
 
     CameraTaskRunRecord stopped = running;
     stopped.status = "stopped";

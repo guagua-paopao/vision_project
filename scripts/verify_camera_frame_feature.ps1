@@ -88,7 +88,9 @@ foreach ($route in @(
     '/api/v1/camera-profiles',
     '/api/v1/camera-profiles/<string>',
     '/api/v1/operations/metrics',
-    '/api/v1/operations/metrics/prometheus'
+    '/api/v1/operations/metrics/prometheus',
+    '/api/v1/operations/callbacks',
+    '/api/v1/operations/callbacks/<string>/replay'
 )) {
     if (-not $controller.Contains($route)) { throw "Required Camera API route is missing: $route" }
 }
@@ -114,7 +116,13 @@ foreach ($element in @('camera-rows','profile-rows','hub-cards','operations-cont
     if (-not $adminHtml.Contains($element)) { throw "M8/M9 admin UI element is missing: $element" }
 }
 
-foreach ($script in @('soak_camera_frame_feature.ps1','backup_runtime.ps1','restore_runtime.ps1')) {
+foreach ($script in @(
+    'soak_camera_frame_feature.ps1',
+    'backup_runtime.ps1',
+    'restore_runtime.ps1',
+    'test_mock_callback_backend.ps1',
+    'verify_algorithm_service_p5.ps1'
+)) {
     $path = Join-Path (Join-Path $ProjectRoot 'scripts') $script
     $tokens = $null
     $errors = $null
@@ -134,11 +142,30 @@ if ($cmake -match 'unofficial::sqlite3|runtime_sqlite_integrity_check') {
     throw "M11 violation: production build still links SQLite"
 }
 $manager = Get-Content -LiteralPath (Join-Path $ProjectRoot "src\server\camera_task_manager.cpp") -Raw -Encoding UTF8
-if ($manager -notmatch 'sessions_\[command\.task_id\]' -or $manager -notmatch 'replaced->thread\.join') {
+if ($manager -notmatch 'pipelines_\[command\.task_id\]' -or
+    $manager -notmatch 'replaced->thread\.join') {
     throw "M11 camera_id thread ownership/replacement invariant is missing"
 }
 $postgresSchema = Join-Path $ProjectRoot "db\postgresql\001_initial_schema.sql"
 if (-not (Test-Path -LiteralPath $postgresSchema)) { throw "M11 PostgreSQL schema is missing" }
 
-Write-Host "PASS: Camera Frame M0-M11 camera-id lifecycle, PostgreSQL, architecture, security, backend, and Qt guards passed." `
+$postmanRoot = Join-Path $ProjectRoot "postman"
+foreach ($postmanFile in @(
+    'vision_project_p5.postman_collection.json',
+    'vision_project_p5.local.postman_environment.json'
+)) {
+    $path = Join-Path $postmanRoot $postmanFile
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "P5 Postman artifact is missing: $postmanFile"
+    }
+    Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
+        ConvertFrom-Json | Out-Null
+}
+$mockBackend = Join-Path $ProjectRoot "scripts\mock_callback_backend.js"
+& node --check $mockBackend
+if ($LASTEXITCODE -ne 0) { throw "P5 mock callback JavaScript syntax failed" }
+& (Join-Path $PSScriptRoot "test_mock_callback_backend.ps1") -Root $ProjectRoot
+if ($LASTEXITCODE -ne 0) { throw "P5 mock callback acceptance failed" }
+
+Write-Host "PASS: Camera Frame M0-M11 and Algorithm Service P5 architecture, security, backend, Postman, and callback guards passed." `
     -ForegroundColor Green

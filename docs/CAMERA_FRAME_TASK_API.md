@@ -166,8 +166,47 @@ setting its URI environment variable, and restarting Server/Worker.
 
 - `GET /operations/metrics`
 - `GET /operations/metrics/prometheus`
+- `GET /operations/callbacks?status=dead_letter&camera_id={camera_id}&limit=20&offset=0`
+- `POST /operations/callbacks/{outbox_id}/replay`
 
-Durable metrics come from PostgreSQL. Redis provides hot Run/Hub metrics.
+Durable task, Run, alert, and callback-outbox metrics come from PostgreSQL.
+Redis provides hot Run/Hub state plus the latest `VisionWorkerHost` snapshot:
+
+- active Pipeline count;
+- fixed inference workers, camera queues, and job counters;
+- algorithm Processor sessions, frames, alerts, duplicates, and failures;
+- callback profiles, claims, deliveries, retries, dead letters, transport
+  failures, lease conflicts, and stable last error code.
+
+The JSON response exposes this under `algorithm_runtime`; its `available` and
+`runtime_stale` fields must be checked before interpreting counters. Prometheus
+uses the `yolo11_algorithm_*` and `yolo11_callback_*` families.
+
+The dead-letter query defaults to `status=dead_letter`; `status=all` is
+available for audits. Results never include callback URLs, secrets, request
+bodies, or response bodies.
+
+Manual replay is deliberately optimistic. Read the entry, then send its
+observed `attempt` as an ETag:
+
+```http
+POST /api/v1/operations/callbacks/42/replay
+Authorization: Bearer <admin token>
+If-Match: "3"
+Content-Type: application/json
+
+{}
+```
+
+A matching dead-letter is atomically moved to `retry`, its automatic retry
+budget is reset, and the response is `202`. A stale attempt or non-dead state
+returns `409 CALLBACK_REPLAY_CONFLICT`; a missing entry returns 404.
+
+`GET /ready` additionally exposes `algorithm_runtime_available`,
+`algorithm_runtime_fresh`, `inference_pool_ready`, and
+`callback_delivery_ready`. When Camera Tasks are enabled, readiness is false
+until the Worker heartbeat contains a fresh, running inference/Processor and
+callback snapshot required by the deployment configuration.
 
 ## Removed routes
 
