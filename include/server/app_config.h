@@ -182,6 +182,20 @@ namespace yolo11_server {
         std::string config_error;
     };
 
+    struct AnalysisSection {
+        bool enabled = true;
+        // Fixed at process startup. Each worker owns exactly one model runner.
+        int inference_workers = 2;
+        int model_init_timeout_ms = 120000;
+        std::vector<std::string> supported_algorithms{
+            "people_flow",
+            "security",
+            "electronic_fence",
+            "pose_action",
+            "temporal_action"
+        };
+    };
+
     struct NormalizedPoint {
         double x = 0.0;
         double y = 0.0;
@@ -448,6 +462,7 @@ namespace yolo11_server {
         CaptureSection capture;
         CameraHubSection camera_hub;
         CameraTasksSection camera_tasks;
+        AnalysisSection analysis;
         PeopleFlowSection people_flow;
         RedisSection redis;
         LoggingSection logging;

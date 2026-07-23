@@ -203,10 +203,15 @@ int main() {
         R"({"camera_id":"unsafe","name":"bad","camera_profile":"entry_camera_01","surprise":1})"));
     require(response.code == 400 && responseBody(response)["error_code"] == "UNKNOWN_FIELD",
         "undefined Camera fields must be rejected");
+    response = controller.createTask(request(
+        R"({"camera_id":"unsupported_algorithm","name":"unsupported","camera_profile":"entry_camera_01","analysis":{"enabled":true,"algorithm_profile":"unsupported","algorithms":["not_deployed"]}})"));
+    require(response.code == 400 &&
+            responseBody(response)["error_code"] == "INVALID_TASK_CONFIG",
+        "algorithms outside the configured deployment allow-list must fail at the HTTP boundary");
 
     const std::string camera_id = "entrance_extract_01";
     const std::string create_payload =
-        R"({"camera_id":"entrance_extract_01","name":"Entrance extraction","camera_profile":"entry_camera_01","desired_state":"running","frame_interval_ms":1000,"output_mode":"both","jpeg_quality":88,"max_width":640,"max_height":480,"retention_days":7,"max_saved_frames":10,"analysis":{"enabled":true,"target_infer_fps":6.5,"algorithm_profile":"security_default","algorithms":["people_flow","ppe_detection"]},"callback_profile":"backend_primary"})";
+        R"({"camera_id":"entrance_extract_01","name":"Entrance extraction","camera_profile":"entry_camera_01","desired_state":"running","frame_interval_ms":1000,"output_mode":"both","jpeg_quality":88,"max_width":640,"max_height":480,"retention_days":7,"max_saved_frames":10,"analysis":{"enabled":true,"target_infer_fps":6.5,"algorithm_profile":"security_default","algorithms":["people_flow","electronic_fence"]},"callback_profile":"backend_primary"})";
     auto create_request = request(create_payload);
     create_request.add_header("Idempotency-Key", "create-entrance-001");
     response = controller.createTask(create_request);
@@ -221,7 +226,7 @@ int main() {
             control->submitted.front().target_infer_fps == 6.5 &&
             control->submitted.front().algorithm_profile == "security_default" &&
             control->submitted.front().algorithms ==
-                std::vector<std::string>({ "people_flow", "ppe_detection" }) &&
+                std::vector<std::string>({ "people_flow", "electronic_fence" }) &&
             control->submitted.front().callback_profile == "backend_primary",
         "the extraction command must carry the safe algorithm contract and contain no RTSP URI");
     response = controller.createTask(create_request);

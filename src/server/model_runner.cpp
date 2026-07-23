@@ -5,6 +5,8 @@
 #include <exception>
 #include <stdexcept>
 
+#include "yolo11_pose_api.h"
+
 namespace yolo11_server {
 
 namespace {
@@ -15,6 +17,8 @@ std::string lower(std::string text) {
     return text;
 }
 }  // namespace
+
+PoseModelRunner::~PoseModelRunner() = default;
 
 std::string PoseModelRunner::modelType() const {
     return "pose";

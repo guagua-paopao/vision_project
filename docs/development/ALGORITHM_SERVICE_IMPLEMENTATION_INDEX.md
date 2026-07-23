@@ -13,9 +13,9 @@ are recorded here.
   results, known skipped tests, rollback instructions, and the next-phase gate.
 - Machine-readable contracts live under `api/schemas`; implementation and
   tests must remain compatible with their major version.
-- This workspace currently has no usable Git repository metadata. Until Git is
-  restored, file paths, test output, schema versions, and dated phase records
-  are the authoritative trace chain.
+- Git history is restored. Every accepted phase is published on an
+  `agent/...` branch and linked through a draft pull request in addition to
+  file paths, test output, schema versions, and dated phase records.
 
 ## Phases
 
@@ -23,8 +23,8 @@ are recorded here.
 |---|---|---|---|
 | P0 | Contract and architecture freeze | Complete | [P0 contract freeze](ALGORITHM_SERVICE_P0_CONTRACT.md) |
 | P1 | Data model and HTTP control plane | Complete | [P1 control plane](ALGORITHM_SERVICE_P1_CONTROL_PLANE.md) |
-| P2 | Per-camera `CameraPipeline` lifecycle | In progress (DB recheck blocked) | [P2 CameraPipeline](ALGORITHM_SERVICE_P2_CAMERA_PIPELINE.md) |
-| P3 | Fixed inference worker pool | Planned | `ALGORITHM_SERVICE_P3_INFERENCE_POOL.md` |
+| P2 | Per-camera `CameraPipeline` lifecycle | Complete | [P2 CameraPipeline](ALGORITHM_SERVICE_P2_CAMERA_PIPELINE.md) |
+| P3 | Fixed inference worker pool | Complete | [P3 inference pool](ALGORITHM_SERVICE_P3_INFERENCE_POOL.md) |
 | P4 | Durable alert callback | Planned | `ALGORITHM_SERVICE_P4_ALERT_CALLBACK.md` |
 | P5 | Integration, observability, and Postman | Planned | `ALGORITHM_SERVICE_P5_INTEGRATION.md` |
 | P6 | Hardware acceptance and release | Planned | `ALGORITHM_SERVICE_P6_RELEASE.md` |
@@ -37,8 +37,14 @@ are recorded here.
   `four_stage_worker`/`VisionWorkerHost` compute process.
 - Invariant retained through P1-P6: `worker.worker_num=1` for a single shared
   RTSP ownership domain. Inference parallelism is a separate configuration.
-- Baseline CTest: 12 tests, 0 failures; 7 passed and 5 skipped because a
-  disposable PostgreSQL test DSN was not present.
+- P2 exit CTest on disposable PostgreSQL 17: 12 tests, 12 passed, 0 failed,
+  0 skipped, 8.48 seconds.
+- P3 exit CTest on disposable PostgreSQL 17: 14 tests, 14 passed, 0 failed,
+  0 skipped, 8.33 seconds.
+- P3 runtime invariant: one Pipeline thread per active camera, plus a
+  startup-fixed pool of `analysis.inference_workers` model runners.
+- GitHub recovery checkpoint: branch `agent/p2-camera-pipeline`, commit
+  `1775b32`, draft pull request #1.
 
 ## Completion definition
 

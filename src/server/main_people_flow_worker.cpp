@@ -94,10 +94,11 @@ int main(int argc, char** argv) {
         std::cerr << "[BOOT] worker logger initialized\n";
 
         yolo11_server::VisionWorkerHost worker(1, config, consumer_name,
-            [config, consumer_name](auto hub_registry) {
+            [config, consumer_name](auto hub_registry, auto inference_sink) {
                 std::string error;
                 auto manager = yolo11_server::createProductionCameraTaskManager(
-                    config, consumer_name, std::move(hub_registry), error);
+                    config, consumer_name, std::move(hub_registry),
+                    std::move(inference_sink), error);
                 if (!manager && !error.empty()) {
                     spdlog::error("Failed to create Camera Task runtime: {}", error);
                 }

@@ -418,6 +418,28 @@ namespace yolo11_server {
         config.camera_tasks.defaults.callback_profile = readOrDefault<std::string>(
             camera_task_defaults, "callback_profile", config.camera_tasks.defaults.callback_profile);
 
+        const auto analysis = root["analysis"];
+        config.analysis.enabled = readOrDefault<bool>(
+            analysis, "enabled", config.analysis.enabled);
+        config.analysis.inference_workers = readOrDefault<int>(
+            analysis, "inference_workers", config.analysis.inference_workers);
+        config.analysis.model_init_timeout_ms = readOrDefault<int>(
+            analysis, "model_init_timeout_ms", config.analysis.model_init_timeout_ms);
+        config.analysis.supported_algorithms = readOrDefault<std::vector<std::string>>(
+            analysis, "supported_algorithms", config.analysis.supported_algorithms);
+        config.analysis.inference_workers = std::clamp(
+            config.analysis.inference_workers, 1, 16);
+        config.analysis.model_init_timeout_ms = std::clamp(
+            config.analysis.model_init_timeout_ms, 1000, 600000);
+        std::sort(
+            config.analysis.supported_algorithms.begin(),
+            config.analysis.supported_algorithms.end());
+        config.analysis.supported_algorithms.erase(
+            std::unique(
+                config.analysis.supported_algorithms.begin(),
+                config.analysis.supported_algorithms.end()),
+            config.analysis.supported_algorithms.end());
+
         config.camera_tasks.max_active_runs = std::clamp(config.camera_tasks.max_active_runs, 1, 64);
         config.camera_tasks.writer_threads = std::clamp(config.camera_tasks.writer_threads, 1, 16);
         config.camera_tasks.writer_queue_capacity = std::clamp(

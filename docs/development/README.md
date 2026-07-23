@@ -33,3 +33,4 @@ M0-M11 FrameHub history stays immutable:
 - [P0 integrated contract freeze](ALGORITHM_SERVICE_P0_CONTRACT.md)
 - [P1 data model and HTTP control plane](ALGORITHM_SERVICE_P1_CONTROL_PLANE.md)
 - [P2 per-camera CameraPipeline](ALGORITHM_SERVICE_P2_CAMERA_PIPELINE.md)
+- [P3 fixed inference worker pool](ALGORITHM_SERVICE_P3_INFERENCE_POOL.md)

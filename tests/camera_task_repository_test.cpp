@@ -170,14 +170,23 @@ int main() {
     alert.evidence_frame_id = frame.frame_id;
     alert.fingerprint = "ct_alpha:ppe_violation:17:42";
     alert.created_at_ms = stamp + 8;
-    require(repository.insertAlert(alert, code, error),
-        "security alert event must persist: " + error);
+    require(repository.insertAlert(alert, task.callback_profile, code, error),
+        "security alert and callback outbox must persist atomically: " + error);
     SecurityAlertEventRecord loaded_alert;
     require(repository.getAlert(alert.event_id, loaded_alert, found, error) && found &&
             loaded_alert.event_type == "ppe_violation" &&
             loaded_alert.confidence && *loaded_alert.confidence == 0.93 &&
-            loaded_alert.delivery_status == "not_scheduled",
+            loaded_alert.delivery_status == "pending",
         "security alert detail must preserve contract and delivery state");
+    auto outbox = database.prepare(
+        "SELECT callback_profile,status,attempt FROM callback_outbox WHERE event_id=?;", error);
+    require(outbox != nullptr, "callback outbox query must prepare: " + error);
+    outbox->bindText(1, alert.event_id);
+    require(outbox->step() == PG_STEP_ROW &&
+            outbox->columnText(0) == task.callback_profile &&
+            outbox->columnText(1) == "pending" &&
+            outbox->columnInt(2) == 0,
+        "alert transaction must create one pending callback outbox row");
     std::vector<SecurityAlertEventRecord> alerts;
     require(repository.listAlerts(task.task_id, "ppe_violation", 4, 20, 0, alerts, error) &&
             alerts.size() == 1 && alerts.front().event_id == alert.event_id,

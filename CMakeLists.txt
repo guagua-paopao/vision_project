@@ -136,6 +136,17 @@ add_library(camera_task_scheduling STATIC src/server/camera_task_manager.cpp)
 target_include_directories(camera_task_scheduling PUBLIC "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(camera_task_scheduling PUBLIC spdlog::spdlog Threads::Threads)
 
+add_library(camera_inference_pool STATIC src/server/camera_inference_pool.cpp)
+target_include_directories(camera_inference_pool PUBLIC "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(camera_inference_pool PUBLIC
+    app_support spdlog::spdlog ${OpenCV_LIBS} Threads::Threads)
+
+add_library(camera_algorithm_runtime STATIC src/server/camera_algorithm_processor.cpp)
+target_include_directories(camera_algorithm_runtime PUBLIC "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(camera_algorithm_runtime PUBLIC
+    camera_inference_pool camera_task_storage people_flow_vision security_analytics_core
+    nlohmann_json::nlohmann_json OpenSSL::Crypto ${OpenCV_LIBS} Threads::Threads)
+
 add_library(camera_task_redis STATIC src/server/camera_task_queue.cpp)
 target_include_directories(camera_task_redis PUBLIC "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(camera_task_redis PUBLIC camera_task_scheduling hiredis::hiredis nlohmann_json::nlohmann_json)
@@ -186,7 +197,9 @@ add_executable(four_stage_worker
 target_include_directories(four_stage_worker PRIVATE
     "${PROJECT_INCLUDE_DIR}" "${PROJECT_PLUGIN_DIR}" ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(four_stage_worker PRIVATE
-    app_support camera_capture_runtime camera_task_runtime camera_task_scheduling people_flow_redis people_flow_storage security_analytics_core pose_runtime myplugins
+    app_support camera_capture_runtime camera_task_runtime camera_task_scheduling
+    camera_inference_pool camera_algorithm_runtime
+    people_flow_redis people_flow_storage security_analytics_core pose_runtime myplugins
     nlohmann_json::nlohmann_json spdlog::spdlog ${OpenCV_LIBS})
 add_dependencies(four_stage_worker myplugins)
 add_custom_command(TARGET four_stage_worker POST_BUILD
@@ -231,6 +244,19 @@ add_executable(camera_task_manager_test tests/camera_task_manager_test.cpp)
 target_include_directories(camera_task_manager_test PRIVATE "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(camera_task_manager_test PRIVATE camera_task_scheduling)
 add_test(NAME camera_task_manager_test COMMAND camera_task_manager_test)
+
+add_executable(camera_inference_pool_test tests/camera_inference_pool_test.cpp)
+target_include_directories(camera_inference_pool_test PRIVATE "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(camera_inference_pool_test PRIVATE camera_inference_pool ${OpenCV_LIBS})
+add_test(NAME camera_inference_pool_test COMMAND camera_inference_pool_test)
+
+add_executable(camera_algorithm_processor_test tests/camera_algorithm_processor_test.cpp)
+target_include_directories(camera_algorithm_processor_test PRIVATE
+    "${PROJECT_INCLUDE_DIR}" "${PROJECT_PLUGIN_DIR}" ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(camera_algorithm_processor_test PRIVATE
+    camera_algorithm_runtime camera_task_storage ${OpenCV_LIBS})
+add_test(NAME camera_algorithm_processor_test COMMAND camera_algorithm_processor_test)
+set_tests_properties(camera_algorithm_processor_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(camera_task_repository_test tests/camera_task_repository_test.cpp)
 target_include_directories(camera_task_repository_test PRIVATE "${PROJECT_INCLUDE_DIR}")

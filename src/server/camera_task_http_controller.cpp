@@ -183,7 +183,10 @@ bool safeServiceIdentifier(const std::string& value, std::size_t maximum, bool a
     });
 }
 
-bool validTaskDefinition(const CameraTaskDefinition& task) {
+bool validTaskDefinition(
+    const CameraTaskDefinition& task,
+    const AnalysisSection& analysis_config
+) {
     std::size_t name_length = 0;
     if (!(utf8Length(task.name, name_length) && name_length >= 1 && name_length <= 128 &&
         safeIdentifier(task.camera_profile) && task.frame_interval_ms >= 100 &&
@@ -197,12 +200,18 @@ bool validTaskDefinition(const CameraTaskDefinition& task) {
         task.target_infer_fps >= 0.1 && task.target_infer_fps <= 120.0 &&
         safeServiceIdentifier(task.algorithm_profile, 160, !task.analysis_enabled) &&
         safeServiceIdentifier(task.callback_profile, 160, true) &&
-        (!task.analysis_enabled || !task.algorithms.empty()) && task.algorithms.size() <= 32)) {
+        (!task.analysis_enabled || (analysis_config.enabled && !task.algorithms.empty())) &&
+        task.algorithms.size() <= 32)) {
         return false;
     }
+    const std::set<std::string> supported(
+        analysis_config.supported_algorithms.begin(),
+        analysis_config.supported_algorithms.end());
     std::set<std::string> unique;
     for (const auto& algorithm : task.algorithms) {
-        if (!safeServiceIdentifier(algorithm, 80) || !unique.insert(algorithm).second) return false;
+        if (!safeServiceIdentifier(algorithm, 80) ||
+            !unique.insert(algorithm).second ||
+            (task.analysis_enabled && supported.count(algorithm) == 0)) return false;
     }
     return true;
 }
@@ -653,7 +662,9 @@ crow::response CameraTaskHttpController::createTask(const crow::request& request
     }
     if (!profile_found) return errorResponse(400, "CAMERA_PROFILE_NOT_FOUND", request_id);
     if (!resolved_profile.enabled) return errorResponse(409, "CAMERA_PROFILE_DISABLED", request_id);
-    if (!validTaskDefinition(task)) return errorResponse(400, "INVALID_TASK_CONFIG", request_id);
+    if (!validTaskDefinition(task, config_.analysis)) {
+        return errorResponse(400, "INVALID_TASK_CONFIG", request_id);
+    }
     task.version = 1;
     task.created_at_ms = nowMs();
     task.updated_at_ms = task.created_at_ms;
@@ -878,7 +889,7 @@ crow::response CameraTaskHttpController::updateTask(
     if (patch.algorithms) candidate.algorithms = *patch.algorithms;
     if (patch.callback_profile) candidate.callback_profile = *patch.callback_profile;
     candidate.enabled = candidate.desired_state == "running";
-    if (!validTaskDefinition(candidate)) {
+    if (!validTaskDefinition(candidate, config_.analysis)) {
         return errorResponse(400, "INVALID_TASK_CONFIG", request_id);
     }
     CameraTaskRunRecord active;

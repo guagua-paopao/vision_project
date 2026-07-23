@@ -7,7 +7,10 @@
 
 #include "server/app_config.h"
 #include "server/model_output.h"
-#include "yolo11_pose_api.h"
+
+namespace yolo11 {
+class Yolo11PoseDetector;
+}
 
 namespace yolo11_server {
 
@@ -25,6 +28,7 @@ public:
 // four-stage demo. Detection boxes and COCO keypoints come from one inference.
 class PoseModelRunner final : public IModelRunner {
 public:
+    ~PoseModelRunner() override;
     std::string modelType() const override;
     bool init(const AppConfig& config, std::string& error) override;
     ModelOutput infer(const cv::Mat& image) override;

@@ -9,10 +9,13 @@
 
 namespace yolo11_server {
 
+class ICameraFrameJobSink;
+
 std::unique_ptr<CameraTaskManager> createProductionCameraTaskManager(
     const AppConfig& config,
     const std::string& consumer_name,
     std::shared_ptr<SharedCameraFrameHubRegistry> hub_registry,
+    std::shared_ptr<ICameraFrameJobSink> inference_sink,
     std::string& error
 );
 
