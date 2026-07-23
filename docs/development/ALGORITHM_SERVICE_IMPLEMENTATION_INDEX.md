@@ -53,8 +53,8 @@ are recorded here.
   draft pull request #3.
 - P3 implementation: branch `agent/p3-fixed-inference-pool`, commit
   `ab780ab`, draft pull request #2 stacked on the P2 branch.
-- P4 implementation: `agent/p4-durable-callback` (publication checkpoint is
-  recorded in the P4 phase record).
+- P4 implementation: branch `agent/p4-durable-callback`, commit `f773296`,
+  draft pull request #4 stacked on the P3 branch.
 
 ## Completion definition
 

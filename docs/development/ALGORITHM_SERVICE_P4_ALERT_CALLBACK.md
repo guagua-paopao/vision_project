@@ -225,4 +225,12 @@ P5 应完成统一集成和可观测性：
 
 ## 10. GitHub 检查点
 
-本节在 P4 分支和草稿 PR 发布后追加，作为不可歧义的版本回溯入口。
+- 分支：`agent/p4-durable-callback`
+- P4 实现提交：`f77329656904fc49d71bf1c65b45f04189072c22`
+- 草稿 PR：
+  [#4 P4：持久化告警 HTTP 回调与可靠投递](https://github.com/guagua-paopao/vision_project/pull/4)
+- 堆叠基线：`agent/p3-fixed-inference-pool` /
+  `497b9f8d14a5e30464e3d7546a544c358a156e15`
+
+合并顺序为 PR #3（P2）→ PR #2（P3）→ PR #4（P4）。前序阶段进入
+`main` 后，应依次把后续 PR 的 base 调整为 `main` 再做最终合并。
