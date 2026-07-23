@@ -28,7 +28,54 @@ capture:
   reconnect_initial_delay_ms: 500
   reconnect_max_delay_ms: 10000
   status_update_interval_ms: 1000
-  allow_backend_fallback: true
+  allow_backend_fallback: false
+
+camera_hub:
+  enabled: true
+  max_active_hubs: 4
+  idle_grace_ms: 5000
+  require_ffmpeg_backend: true
+  status_update_interval_ms: 1000
+
+camera_tasks:
+  enabled: true
+  postgres_dsn_env: "YOLO11_POSTGRES_DSN"
+  output_dir: "./runtime/output/camera_frames"
+  admin_ui_dir: "./web/camera-admin"
+  command_stream_key: "yolo:stream:camera-frame"
+  consumer_group: "yolo11_camera_frame_group"
+  max_active_runs: 4
+  writer_threads: 2
+  writer_queue_capacity: 32
+  writer_queue_capacity_per_run: 8
+  status_ttl_seconds: 604800
+  lease_ttl_seconds: 30
+  lease_refresh_seconds: 5
+  stale_run_timeout_ms: 30000
+  retention_sweep_interval_seconds: 60
+  retention_batch_size: 500
+  admin_token_env: "YOLO11_CAMERA_TASK_ADMIN_TOKEN"
+  storage:
+    max_archive_bytes: 21474836480
+    min_free_bytes: 1073741824
+    high_watermark_percent: 85
+    critical_watermark_percent: 95
+    pressure_cleanup_batch_size: 1000
+    backup_dir: "./runtime/backups"
+    backup_retention_count: 7
+  defaults:
+    frame_interval_ms: 1000
+    output_mode: "latest"
+    jpeg_quality: 90
+    max_width: 0
+    max_height: 0
+    retention_days: 7
+    max_saved_frames: 100000
+    analysis_enabled: false
+    target_infer_fps: 5
+    algorithm_profile: ""
+    algorithms: []
+    callback_profile: ""
 
 people_flow:
   enabled: true
@@ -166,11 +213,10 @@ people_flow:
     font_scale: 0.55
     ui_scale: 0.0
   storage:
-    sqlite_path: "./runtime/data/people_flow.db"
+    postgres_dsn_env: "YOLO11_POSTGRES_DSN"
     writer_queue_capacity: 10000
     writer_batch_size: 100
     writer_flush_interval_ms: 500
-    sqlite_busy_timeout_ms: 5000
     events_max_len: 10000
     event_retention_days: 180
     aggregate_retention_days: 730

@@ -5,8 +5,8 @@
     "crow",
     "hiredis",
     "nlohmann-json",
+    "libpq",
     "spdlog",
-    "sqlite3",
     "yaml-cpp"
   ]
 }

@@ -121,7 +121,65 @@ namespace yolo11_server {
         int reconnect_initial_delay_ms = 500;
         int reconnect_max_delay_ms = 10000;
         int status_update_interval_ms = 1000;
-        bool allow_backend_fallback = true;
+        bool allow_backend_fallback = false;
+    };
+
+    struct CameraHubSection {
+        bool enabled = true;
+        int max_active_hubs = 4;
+        int idle_grace_ms = 5000;
+        bool require_ffmpeg_backend = true;
+        int status_update_interval_ms = 1000;
+    };
+
+    struct CameraTaskDefaultsSection {
+        int frame_interval_ms = 1000;
+        std::string output_mode = "latest";
+        int jpeg_quality = 90;
+        int max_width = 0;
+        int max_height = 0;
+        int retention_days = 7;
+        int max_saved_frames = 100000;
+        bool analysis_enabled = false;
+        double target_infer_fps = 5.0;
+        std::string algorithm_profile;
+        std::vector<std::string> algorithms;
+        std::string callback_profile;
+    };
+
+    struct CameraTaskStoragePolicySection {
+        // 0 disables the corresponding guard for backwards-compatible test
+        // and embedded deployments.
+        long long max_archive_bytes = 0;
+        long long min_free_bytes = 0;
+        int high_watermark_percent = 85;
+        int critical_watermark_percent = 95;
+        int pressure_cleanup_batch_size = 1000;
+        std::string backup_dir = "./runtime/backups";
+        int backup_retention_count = 7;
+    };
+
+    struct CameraTasksSection {
+        bool enabled = false;
+        std::string postgres_dsn_env = "YOLO11_POSTGRES_DSN";
+        std::string output_dir = "./runtime/output/camera_frames";
+        std::string admin_ui_dir = "./web/camera-admin";
+        std::string command_stream_key = "yolo:stream:camera-frame";
+        std::string consumer_group = "yolo11_camera_frame_group";
+        int max_active_runs = 4;
+        int writer_threads = 2;
+        int writer_queue_capacity = 32;
+        int writer_queue_capacity_per_run = 8;
+        int status_ttl_seconds = 604800;
+        int lease_ttl_seconds = 30;
+        int lease_refresh_seconds = 5;
+        int stale_run_timeout_ms = 30000;
+        int retention_sweep_interval_seconds = 60;
+        int retention_batch_size = 500;
+        std::string admin_token_env = "YOLO11_CAMERA_TASK_ADMIN_TOKEN";
+        CameraTaskDefaultsSection defaults;
+        CameraTaskStoragePolicySection storage;
+        std::string config_error;
     };
 
     struct NormalizedPoint {
@@ -224,11 +282,10 @@ namespace yolo11_server {
     };
 
     struct PeopleFlowStorageSection {
-        std::string sqlite_path = "./runtime/data/people_flow.db";
+        std::string postgres_dsn_env = "YOLO11_POSTGRES_DSN";
         int writer_queue_capacity = 10000;
         int writer_batch_size = 100;
         int writer_flush_interval_ms = 500;
-        int sqlite_busy_timeout_ms = 5000;
         int events_max_len = 10000;
         int event_retention_days = 180;
         int aggregate_retention_days = 730;
@@ -277,7 +334,7 @@ namespace yolo11_server {
         int realtime_ttl_seconds = 10;
         int session_ttl_seconds = 604800;
         int stale_timeout_ms = 30000;
-        std::string admin_token_env = "YOLO11_PEOPLE_FLOW_ADMIN_TOKEN";
+        std::string admin_token_env = "YOLO11_CAMERA_TASK_ADMIN_TOKEN";
         PeopleFlowPersonSection person;
         PeopleFlowTrackerSection tracker;
         PeopleFlowCountingSection counting;
@@ -389,6 +446,8 @@ namespace yolo11_server {
         VideoSection video;
         StreamSection stream;
         CaptureSection capture;
+        CameraHubSection camera_hub;
+        CameraTasksSection camera_tasks;
         PeopleFlowSection people_flow;
         RedisSection redis;
         LoggingSection logging;

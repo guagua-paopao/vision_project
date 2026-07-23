@@ -6,7 +6,9 @@
 #include <thread>
 #include <vector>
 
+#include "business/postgres_client.h"
 #include "business/people_flow_repository.h"
+#include "postgres_test_guard.h"
 
 namespace {
 
@@ -41,25 +43,21 @@ namespace {
 }  // namespace
 
 int main() {
-    namespace fs = std::filesystem;
     using namespace yolo11_server;
-
-    const fs::path db_path = fs::temp_directory_path() / "yolo11_phase22_repository_test.db";
-    fs::path wal_path = db_path;
-    fs::path shm_path = db_path;
-    wal_path += "-wal";
-    shm_path += "-shm";
-    std::error_code ignored;
-    fs::remove(db_path, ignored);
-    fs::remove(wal_path, ignored);
-    fs::remove(shm_path, ignored);
+    if (const int guard = requireDisposablePostgresTestDatabase()) return guard;
 
     PeopleFlowSection config;
-    config.storage.sqlite_path = pathToUtf8(db_path);
+    config.storage.postgres_dsn_env = "YOLO11_TEST_POSTGRES_DSN";
     config.storage.writer_queue_capacity = 100;
     config.storage.writer_batch_size = 20;
     config.storage.writer_flush_interval_ms = 25;
-    config.storage.sqlite_busy_timeout_ms = 1000;
+    std::string reset_error;
+    PostgresConnection database;
+    require(database.openFromEnvironment(config.storage.postgres_dsn_env, reset_error),
+        "test PostgreSQL connection must open: " + reset_error);
+    require(database.exec(
+        "DROP TABLE IF EXISTS pf_calibration_audit,pf_aggregates_minute,pf_crossing_events,pf_sessions,schema_version CASCADE;",
+        reset_error), "test PostgreSQL schema reset must succeed: " + reset_error);
 
     const long long base_time_ms = 1710000000000LL;
     {
@@ -93,7 +91,9 @@ int main() {
         require(repository.enqueueSessionFinish(finish), "session finish must enter the writer queue");
 
         bool persisted = false;
-        for (int attempt = 0; attempt < 100; ++attempt) {
+        // A freshly started disposable PostgreSQL container may need several
+        // seconds for its first schema/connection cycle on Windows CI.
+        for (int attempt = 0; attempt < 200; ++attempt) {
             PeopleFlowSessionRecord stored;
             bool found = false;
             error.clear();
@@ -104,7 +104,9 @@ int main() {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(25));
         }
-        require(persisted, "asynchronous session/event batch must be committed");
+        const auto persistence_health = repository.health();
+        require(persisted, "asynchronous session/event batch must be committed: " +
+            persistence_health.last_error);
         repository.stop();
 
         const PeopleFlowRepositoryHealth health = repository.health();
@@ -180,11 +182,7 @@ int main() {
 
     {
         PeopleFlowSection invalid = config;
-#ifdef _WIN32
-        invalid.storage.sqlite_path = "NUL";
-#else
-        invalid.storage.sqlite_path = "/proc/yolo11_phase22_unwritable/people_flow.db";
-#endif
+        invalid.storage.postgres_dsn_env = "YOLO11_TEST_POSTGRES_DSN_MISSING";
         PeopleFlowRepository degraded(invalid);
         std::string error;
         require(!degraded.start(false, error), "unwritable storage must fail its initial schema check");
@@ -193,9 +191,6 @@ int main() {
         degraded.stop();
     }
 
-    fs::remove(db_path, ignored);
-    fs::remove(db_path.string() + "-wal", ignored);
-    fs::remove(db_path.string() + "-shm", ignored);
-    std::cout << "Phase 22 repository tests passed\n";
+    std::cout << "PostgreSQL People Flow repository tests passed\n";
     return 0;
 }

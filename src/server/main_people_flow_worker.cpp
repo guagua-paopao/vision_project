@@ -21,7 +21,8 @@
 
 #include "server/app_config.h"
 #include "server/app_logger.h"
-#include "server/people_flow_inference_worker.h"
+#include "server/camera_task_runtime.h"
+#include "server/vision_worker_host.h"
 
 namespace {
 
@@ -77,6 +78,7 @@ int main(int argc, char** argv) {
     try {
         cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_WARNING);
         yolo11_server::AppConfig config = yolo11_server::AppConfig::loadFromYaml(argv[1]);
+        std::cerr << "[BOOT] worker configuration loaded\n";
         config.redis.enabled = true;
         config.worker.enabled = true;
         config.people_flow.enabled = true;
@@ -86,17 +88,30 @@ int main(int argc, char** argv) {
             config.redis.consumer_name.empty() ? "people_flow_worker_1" : config.redis.consumer_name);
 
         std::string logger_error;
-        if (!yolo11_server::initializeLogger(config, "people_flow_worker", logger_error)) {
+        if (!yolo11_server::initializeLogger(config, "vision_worker_host", logger_error)) {
             std::cerr << "Logger initialization warning: " << logger_error << '\n';
         }
+        std::cerr << "[BOOT] worker logger initialized\n";
 
-        yolo11_server::PeopleFlowInferenceWorker worker(1, config, consumer_name);
-        if (!worker.start()) {
-            spdlog::error("Failed to start people-flow worker");
+        yolo11_server::VisionWorkerHost worker(1, config, consumer_name,
+            [config, consumer_name](auto hub_registry) {
+                std::string error;
+                auto manager = yolo11_server::createProductionCameraTaskManager(
+                    config, consumer_name, std::move(hub_registry), error);
+                if (!manager && !error.empty()) {
+                    spdlog::error("Failed to create Camera Task runtime: {}", error);
+                }
+                return manager;
+            });
+        std::cerr << "[BOOT] VisionWorkerHost constructed\n";
+        std::string worker_error;
+        if (!worker.start(worker_error)) {
+            spdlog::error("Failed to start VisionWorkerHost: {}", worker_error);
             exit_code = -1;
         }
         else {
-            spdlog::info("People-flow worker started: consumer={}, stream={}, group={}",
+            std::cerr << "[BOOT] VisionWorkerHost roles started\n";
+            spdlog::info("VisionWorkerHost started: people_flow_consumer={}, stream={}, group={}",
                 consumer_name, config.redis.stream_key, config.redis.consumer_group);
             std::unique_lock<std::mutex> lock(stop_mutex);
             stop_cv.wait(lock, []() { return stop_requested.load(); });
@@ -105,7 +120,7 @@ int main(int argc, char** argv) {
         yolo11_server::shutdownLogger();
     }
     catch (const std::exception& e) {
-        std::cerr << "Fatal people-flow worker error: " << e.what() << '\n';
+        std::cerr << "Fatal VisionWorkerHost error: " << e.what() << '\n';
         exit_code = -1;
     }
 

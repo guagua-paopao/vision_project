@@ -3,10 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
 #include <exception>
 #include <thread>
-#include <vector>
 
 #include <opencv2/videoio.hpp>
 #include <spdlog/spdlog.h>
@@ -15,24 +13,6 @@ namespace yolo11_server {
 
     namespace {
 
-        void configureFfmpegTransport(const std::string& transport) {
-            const std::string value = "rtsp_transport;" + (transport == "udp" ? std::string("udp") : std::string("tcp"));
-#ifdef _WIN32
-            _putenv_s("OPENCV_FFMPEG_CAPTURE_OPTIONS", value.c_str());
-#else
-            ::setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", value.c_str(), 1);
-#endif
-        }
-
-        std::string captureBackendName(cv::VideoCapture& capture) {
-            try {
-                return capture.getBackendName();
-            }
-            catch (...) {
-                return "unknown";
-            }
-        }
-
         int nextBackoffMs(int current, int maximum) {
             const long long doubled = static_cast<long long>(std::max(1, current)) * 2LL;
             return static_cast<int>(std::min<long long>(maximum, doubled));
@@ -40,8 +20,14 @@ namespace yolo11_server {
 
     }  // namespace
 
-    RtspCaptureReader::RtspCaptureReader(const CaptureSection& config)
-        : config_(config) {
+    RtspCaptureReader::RtspCaptureReader(
+        const CaptureSection& config,
+        std::shared_ptr<FfmpegOpenCoordinator> open_coordinator,
+        bool require_ffmpeg_backend
+    ) : config_(config),
+        open_coordinator_(std::move(open_coordinator)),
+        require_ffmpeg_backend_(require_ffmpeg_backend) {
+        if (!open_coordinator_) open_coordinator_ = FfmpegOpenCoordinator::shared();
     }
 
     RtspCaptureReader::~RtspCaptureReader() noexcept {
@@ -69,11 +55,10 @@ namespace yolo11_server {
             uri_ = uri;
             masked_uri_ = masked_uri;
             camera_profile_ = camera_profile;
-            latest_ = CapturedFrame{};
-            delivered_sequence_ = 0;
             metrics_ = RtspCaptureMetrics{};
             metrics_.state = "starting";
         }
+        std::atomic_store(&latest_, SharedCameraFrame{});
         stop_requested_.store(false);
         active_.store(true);
 
@@ -110,16 +95,22 @@ namespace yolo11_server {
     }
 
     bool RtspCaptureReader::getLatestFrame(std::uint64_t after_sequence, CapturedFrame& frame) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (latest_.sequence == 0 || latest_.sequence <= after_sequence || latest_.image.empty()) {
-            return false;
-        }
-        frame.sequence = latest_.sequence;
-        frame.capture_time_ms = latest_.capture_time_ms;
-        frame.resolution_changed = latest_.resolution_changed;
-        frame.image = latest_.image.clone();
-        delivered_sequence_ = std::max(delivered_sequence_, latest_.sequence);
+        const SharedCameraFrame latest = getLatestFrameShared(after_sequence);
+        if (!latest) return false;
+        frame.sequence = latest->sequence;
+        frame.capture_time_ms = latest->capture_time_ms;
+        frame.publish_time = latest->publish_time;
+        frame.resolution_changed = latest->resolution_changed;
+        frame.image = latest->image.clone();
         return !frame.image.empty();
+    }
+
+    SharedCameraFrame RtspCaptureReader::getLatestFrameShared(std::uint64_t after_sequence) const {
+        const SharedCameraFrame latest = std::atomic_load(&latest_);
+        if (!latest || latest->sequence == 0 || latest->sequence <= after_sequence || latest->image.empty()) {
+            return {};
+        }
+        return latest;
     }
 
     RtspCaptureMetrics RtspCaptureReader::metrics() const {
@@ -175,12 +166,11 @@ namespace yolo11_server {
         int warmup_remaining = std::max(0, config_.warmup_frames);
         long long fps_window_start_ms = nowMs();
         long long fps_window_frames = 0;
+        std::uint64_t sequence = 0;
         int previous_width = 0;
         int previous_height = 0;
 
         try {
-            configureFfmpegTransport(config_.transport);
-
             while (!stop_requested_.load()) {
                 std::string uri_copy;
                 std::string masked_copy;
@@ -195,18 +185,12 @@ namespace yolo11_server {
                 setState(consecutive_failures == 0 ? "opening" : "reconnecting",
                     consecutive_failures == 0 ? std::string{} : std::string("RTSP open/read failed; retry scheduled"));
 
-                capture.release();
                 bool fallback_used = false;
-                const std::vector<int> open_params = {
-                    cv::CAP_PROP_OPEN_TIMEOUT_MSEC, config_.open_timeout_ms,
-                    cv::CAP_PROP_READ_TIMEOUT_MSEC, config_.read_timeout_ms
-                };
-                bool opened = capture.open(uri_copy, cv::CAP_FFMPEG, open_params);
-                if (!opened && config_.allow_backend_fallback) {
-                    fallback_used = true;
-                    capture.release();
-                    opened = capture.open(uri_copy, cv::CAP_ANY, open_params);
-                }
+                std::string backend_name;
+                std::string open_error;
+                const bool opened = open_coordinator_->open(
+                    capture, uri_copy, config_, config_.transport, require_ffmpeg_backend_,
+                    backend_name, fallback_used, open_error);
                 std::fill(uri_copy.begin(), uri_copy.end(), '\0');
                 uri_copy.clear();
 
@@ -218,7 +202,9 @@ namespace yolo11_server {
                         ++metrics_.reconnect_count;
                         metrics_.backend_fallback = fallback_used;
                         metrics_.state = "reconnecting";
-                        metrics_.last_error = "RTSP open failed; retry scheduled";
+                        metrics_.last_error = open_error == "FFMPEG_BACKEND_REQUIRED"
+                            ? open_error
+                            : "RTSP open failed; retry scheduled";
                     }
                     spdlog::warn(
                         "RTSP open failed: camera_profile={}, masked_uri={}, reconnect_count={}",
@@ -226,6 +212,10 @@ namespace yolo11_server {
                         masked_copy,
                         metrics().reconnect_count
                     );
+                    if (open_error == "FFMPEG_BACKEND_REQUIRED") {
+                        setState("failed", open_error);
+                        break;
+                    }
                     if (config_.reconnect_max_attempts > 0 && consecutive_failures >= config_.reconnect_max_attempts) {
                         setState("failed", "RTSP reconnect attempts exhausted during open");
                         break;
@@ -236,13 +226,13 @@ namespace yolo11_server {
                 }
 
                 capture.set(cv::CAP_PROP_BUFFERSIZE, static_cast<double>(std::max(1, config_.buffer_size)));
-                const std::string backend_name = captureBackendName(capture);
                 double source_fps = capture.get(cv::CAP_PROP_FPS);
                 if (!std::isfinite(source_fps) || source_fps < 0.0 || source_fps > 240.0) source_fps = 0.0;
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     metrics_.backend_name = backend_name;
                     metrics_.backend_fallback = fallback_used;
+                    ++metrics_.open_count;
                     metrics_.source_fps = source_fps;
                     metrics_.last_error.clear();
                 }
@@ -301,15 +291,21 @@ namespace yolo11_server {
                         fps_window_frames = 0;
                     }
 
+                    auto published = std::make_shared<FrameEnvelope>();
+                    published->image = std::move(decoded);
+                    published->sequence = ++sequence;
+                    published->capture_time_ms = capture_time_ms;
+                    published->publish_time = std::chrono::steady_clock::now();
+                    published->resolution_changed = resolution_changed;
+                    const bool overwritten = static_cast<bool>(std::atomic_load(&latest_));
+                    std::atomic_store(&latest_, std::static_pointer_cast<const FrameEnvelope>(published));
+
                     {
                         std::lock_guard<std::mutex> lock(mutex_);
-                        if (latest_.sequence > delivered_sequence_) {
-                            ++metrics_.dropped_frames;
+                        if (overwritten) {
+                            ++metrics_.overwritten_frames;
+                            metrics_.dropped_frames = metrics_.overwritten_frames;
                         }
-                        latest_.image = decoded.clone();
-                        ++latest_.sequence;
-                        latest_.capture_time_ms = capture_time_ms;
-                        latest_.resolution_changed = resolution_changed;
                         metrics_.state = "running";
                         metrics_.last_error.clear();
                         metrics_.last_frame_time_ms = capture_time_ms;

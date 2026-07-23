@@ -4,6 +4,7 @@
 /runtime/
 /reports/
 /.docker-temp/
+/vcpkg_installed/
 
 # IDE/user-specific files
 /.vs/

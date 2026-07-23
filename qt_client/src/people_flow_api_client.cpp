@@ -13,7 +13,8 @@ QString encodedSegment(const QString& value) {
 }
 
 PeopleFlowApiClient::PeopleFlowApiClient(QObject* parent)
-    : QObject(parent) {}
+    : QObject(parent),
+      bearerToken_(qgetenv("YOLO11_CAMERA_TASK_ADMIN_TOKEN")) {}
 
 void PeopleFlowApiClient::setBaseUrl(const QUrl& baseUrl) {
     if (!baseUrl.isValid() || baseUrl.scheme().isEmpty() || baseUrl.host().isEmpty()) {
@@ -71,6 +72,9 @@ void PeopleFlowApiClient::fetchSnapshot(const QString& sessionId) {
         QStringLiteral("/api/v1/people-flow/%1/snapshot").arg(encodedSegment(sessionId))));
     request.setRawHeader("Accept", "image/jpeg");
     request.setRawHeader("Cache-Control", "no-cache");
+    if (!bearerToken_.isEmpty()) {
+        request.setRawHeader("Authorization", "Bearer " + bearerToken_);
+    }
     QNetworkReply* reply = network_.get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -99,6 +103,9 @@ void PeopleFlowApiClient::fetchEvents(const QString& cameraId, int limit) {
 
     QNetworkRequest request(url);
     request.setRawHeader("Accept", "application/json");
+    if (!bearerToken_.isEmpty()) {
+        request.setRawHeader("Authorization", "Bearer " + bearerToken_);
+    }
     QNetworkReply* reply = network_.get(request);
     connect(reply, &QNetworkReply::finished, this,
             [this, reply]() { finishJson(QStringLiteral("events"), reply); });
@@ -111,6 +118,9 @@ void PeopleFlowApiClient::sendJson(const QString& operation,
     QNetworkRequest request(endpoint(path));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     request.setRawHeader("Accept", "application/json");
+    if (!bearerToken_.isEmpty()) {
+        request.setRawHeader("Authorization", "Bearer " + bearerToken_);
+    }
     const QByteArray payload = body.isEmpty() ? QByteArray() : QJsonDocument(body).toJson(QJsonDocument::Compact);
 
     QNetworkReply* reply = nullptr;

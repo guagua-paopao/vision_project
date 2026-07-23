@@ -25,14 +25,18 @@ int main(int argc, char** argv) {
     try {
         const std::string config_path = argc > 1 ? argv[1] : "config/server.yaml";
         const auto config = yolo11_server::AppConfig::loadFromYaml(config_path);
+        std::cerr << "[BOOT] server configuration loaded\n";
         std::string logger_error;
         yolo11_server::initializeLogger(config, "server", logger_error);
+        std::cerr << "[BOOT] server logger initialized\n";
 
         yolo11_server::PeopleFlowHttpServer controller(config);
+        std::cerr << "[BOOT] server controller constructed\n";
         std::string error;
         if (!controller.initialize(error)) {
             throw std::runtime_error("server initialization failed: " + error);
         }
+        std::cerr << "[BOOT] server dependencies initialized\n";
 
         crow::SimpleApp app;
         app.loglevel(crow::LogLevel::Warning);
