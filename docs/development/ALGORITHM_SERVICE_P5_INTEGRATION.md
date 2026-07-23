@@ -286,4 +286,10 @@ P6 必须在目标硬件关闭以下门禁：
 
 ## 11. GitHub 检查点
 
-本节在 P5 分支和草稿 PR 发布后追加，作为版本回溯入口。
+- 分支：`agent/p5-integration-observability`
+- 实现提交：`b749a26c289a09d460fd11250c1a45a0a792177c`
+- 草稿 PR：[guagua-paopao/vision_project#5](https://github.com/guagua-paopao/vision_project/pull/5)
+- PR 基线：`agent/p4-durable-callback`
+
+实现提交冻结 P5 的代码、测试与首次阶段记录；后续纯文档检查点只补充
+GitHub 链接，不改变该实现提交对应的软件验收结论。

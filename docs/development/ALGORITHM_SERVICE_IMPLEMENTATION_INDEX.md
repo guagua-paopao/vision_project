@@ -60,8 +60,10 @@ are recorded here.
   `ab780ab`, draft pull request #2 stacked on the P2 branch.
 - P4 implementation: branch `agent/p4-durable-callback`, commit `f773296`,
   draft pull request #4 stacked on the P3 branch.
-- P5 implementation: `agent/p5-integration-observability` (publication
-  checkpoint is recorded in the P5 phase record).
+- P5 implementation: branch `agent/p5-integration-observability`, commit
+  `b749a26`, draft pull request
+  [#5](https://github.com/guagua-paopao/vision_project/pull/5) stacked on the
+  P4 branch.
 
 ## Completion definition
 
