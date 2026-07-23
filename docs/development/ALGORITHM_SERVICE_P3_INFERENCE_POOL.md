@@ -197,3 +197,14 @@ P3 没有新增数据库表；复用 P1 已冻结的告警与 outbox schema。�
 P4 必须从 `callback_outbox.status=pending` 开始，实现 callback profile 的 URL/认证
 解析、HTTP POST、超时、指数退避、最大尝试次数、可观测错误和 dead-letter 状态。
 只有后端收到稳定 `event_id` 且重复投递可安全去重，才可关闭 P4。
+
+## 9. GitHub 检查点
+
+- 分支：`agent/p3-fixed-inference-pool`
+- P3 实现提交：`ab780ab`
+- 草稿 PR：[#2 P3：固定 Camera 推理工作池与告警落库](https://github.com/guagua-paopao/vision_project/pull/2)
+- 基线：`agent/p2-camera-pipeline` / `dbd4ab2`
+- P2 最终验收补丁：[#3](https://github.com/guagua-paopao/vision_project/pull/3)
+
+PR #2 采用堆叠基线，使其 33 文件差异只包含 P3。PR #3 合并到 `main` 后，应将
+PR #2 的 base 改为 `main` 再进行最终合并。

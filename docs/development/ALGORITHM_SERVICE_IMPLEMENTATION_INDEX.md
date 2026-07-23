@@ -43,8 +43,11 @@ are recorded here.
   0 skipped, 8.33 seconds.
 - P3 runtime invariant: one Pipeline thread per active camera, plus a
   startup-fixed pool of `analysis.inference_workers` model runners.
-- GitHub recovery checkpoint: branch `agent/p2-camera-pipeline`, commit
-  `1775b32`, draft pull request #1.
+- Historical P0-P2 integration: commit `1775b32`, merged pull request #1.
+- P2 acceptance patch: branch `agent/p2-camera-pipeline`, commit `dbd4ab2`,
+  draft pull request #3.
+- P3 implementation: branch `agent/p3-fixed-inference-pool`, commit
+  `ab780ab`, draft pull request #2 stacked on the P2 branch.
 
 ## Completion definition
 
