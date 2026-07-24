@@ -293,6 +293,17 @@ add_test(NAME algorithm_runtime_heartbeat_test
 set_tests_properties(algorithm_runtime_heartbeat_test PROPERTIES
     SKIP_RETURN_CODE 77)
 
+add_executable(camera_task_lease_fence_test
+    tests/camera_task_lease_fence_test.cpp)
+target_include_directories(camera_task_lease_fence_test PRIVATE
+    "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(camera_task_lease_fence_test PRIVATE
+    camera_task_redis)
+add_test(NAME camera_task_lease_fence_test
+    COMMAND camera_task_lease_fence_test)
+set_tests_properties(camera_task_lease_fence_test PROPERTIES
+    SKIP_RETURN_CODE 77)
+
 add_executable(algorithm_service_integration_test
     tests/algorithm_service_integration_test.cpp)
 target_include_directories(algorithm_service_integration_test PRIVATE

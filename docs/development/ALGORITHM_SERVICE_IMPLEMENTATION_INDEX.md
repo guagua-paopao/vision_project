@@ -27,7 +27,7 @@ are recorded here.
 | P3 | Fixed inference worker pool | Complete | [P3 inference pool](ALGORITHM_SERVICE_P3_INFERENCE_POOL.md) |
 | P4 | Durable alert callback | Complete | [P4 alert callback](ALGORITHM_SERVICE_P4_ALERT_CALLBACK.md) |
 | P5 | Integration, observability, and Postman | Complete | [P5 integration](ALGORITHM_SERVICE_P5_INTEGRATION.md) |
-| P6 | Hardware acceptance and release | Planned | `ALGORITHM_SERVICE_P6_RELEASE.md` |
+| P6 | Hardware acceptance and release | In progress | [P6 hardware acceptance](ALGORITHM_SERVICE_P6_RELEASE.md) |
 
 ## Current baseline
 

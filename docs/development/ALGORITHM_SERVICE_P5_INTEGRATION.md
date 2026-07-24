@@ -293,3 +293,22 @@ P6 必须在目标硬件关闭以下门禁：
 
 实现提交冻结 P5 的代码、测试与首次阶段记录；后续纯文档检查点只补充
 GitHub 链接，不改变该实现提交对应的软件验收结论。
+
+## 12. Amendments
+
+### 2026-07-24：P6 真实环境兼容性修正
+
+P6 在 Windows PowerShell、真实 RTSP 和 Newman 上运行 P5 交付物时发现并修正
+以下验收工具问题；服务端 API 合同和 P5 软件门禁结论不变：
+
+1. `verify_algorithm_service_p5.ps1` 的 JSON 响应参数不再绑定旧的
+   `HtmlWebResponseObject` 具体类型，以兼容 `BasicHtmlWebResponseObject`；
+2. `-ControlPlaneOnly` 不再错误要求 callback Worker 必须运行；
+3. 验收 Camera 清理从响应正文读取最新版本，并等待停止状态后软删除；
+4. Postman Stop 请求保存新的 ETag，后续 Delete 保持乐观并发保护；
+5. 人工 dead-letter replay 增加
+   `enable_dead_letter_replay=false` 与 `pm.execution.skipRequest()` 双重守卫，
+   Newman 默认运行不会产生重放副作用。
+
+修正后的真实 Postman/Newman 运行执行 18 个请求、16 个断言，0 失败；人工
+重放请求按设计跳过。

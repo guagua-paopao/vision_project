@@ -121,7 +121,12 @@ foreach ($script in @(
     'backup_runtime.ps1',
     'restore_runtime.ps1',
     'test_mock_callback_backend.ps1',
-    'verify_algorithm_service_p5.ps1'
+    'verify_algorithm_service_p5.ps1',
+    'process_tree_helpers.ps1',
+    'exercise_worker_restart.ps1',
+    'exercise_rtsp_reconnect.ps1',
+    'exercise_dead_letter_replay.ps1',
+    'verify_algorithm_service_p6.ps1'
 )) {
     $path = Join-Path (Join-Path $ProjectRoot 'scripts') $script
     $tokens = $null
@@ -134,8 +139,23 @@ $soak = Get-Content -LiteralPath (Join-Path $ProjectRoot "scripts\soak_camera_fr
 if ($soak -match '/camera-tasks') {
     throw "M11 violation: soak acceptance still calls removed Camera Task routes"
 }
+foreach ($soakMarker in @(
+    "hub_instance_changed",
+    "hub_reconnected_during_steady_soak",
+    "camera_task_subscriber_missing",
+    "CaptureHostTelemetry"
+)) {
+    if (-not $soak.Contains($soakMarker)) {
+        throw "P6 soak invariant is missing: $soakMarker"
+    }
+}
 
-foreach ($target in @('camera_storage_policy_test','PostgreSQL::PostgreSQL','postgres_storage')) {
+foreach ($target in @(
+        'camera_storage_policy_test',
+        'camera_task_lease_fence_test',
+        'PostgreSQL::PostgreSQL',
+        'postgres_storage'
+    )) {
     if (-not $cmake.Contains($target)) { throw "M10 build target is missing: $target" }
 }
 if ($cmake -match 'unofficial::sqlite3|runtime_sqlite_integrity_check') {
@@ -145,6 +165,37 @@ $manager = Get-Content -LiteralPath (Join-Path $ProjectRoot "src\server\camera_t
 if ($manager -notmatch 'pipelines_\[command\.task_id\]' -or
     $manager -notmatch 'replaced->thread\.join') {
     throw "M11 camera_id thread ownership/replacement invariant is missing"
+}
+$cameraRuntime = Get-Content -LiteralPath (
+    Join-Path $ProjectRoot "src\server\camera_task_runtime.cpp"
+) -Raw -Encoding UTF8
+foreach ($recoveryMarker in @(
+    "CAMERA_RECOVERY_LEASE_ACTIVE",
+    "worker_restart_recovery",
+    "recovery_commands"
+)) {
+    if (-not $cameraRuntime.Contains($recoveryMarker)) {
+        throw "P6 Worker restart recovery guard is missing: $recoveryMarker"
+    }
+}
+$cameraQueue = Get-Content -LiteralPath (
+    Join-Path $ProjectRoot "src\server\camera_task_queue.cpp"
+) -Raw -Encoding UTF8
+foreach ($leaseMarker in @(
+    "lease_owner_token_",
+    "leaseValue(run_id)",
+    "not owned by this Worker instance"
+)) {
+    if (-not $cameraQueue.Contains($leaseMarker)) {
+        throw "P6 Worker-generation lease fence is missing: $leaseMarker"
+    }
+}
+$ffmpegRuntime = Get-Content -LiteralPath (
+    Join-Path $ProjectRoot "src\business\ffmpeg_process_capture_reader.cpp"
+) -Raw -Encoding UTF8
+if (-not $ffmpegRuntime.Contains(
+        "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE")) {
+    throw "P6 FFmpeg child process containment guard is missing"
 }
 $postgresSchema = Join-Path $ProjectRoot "db\postgresql\001_initial_schema.sql"
 if (-not (Test-Path -LiteralPath $postgresSchema)) { throw "M11 PostgreSQL schema is missing" }
@@ -161,11 +212,62 @@ foreach ($postmanFile in @(
     Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
         ConvertFrom-Json | Out-Null
 }
+$postmanCollection = Get-Content -LiteralPath (
+    Join-Path $postmanRoot "vision_project_p5.postman_collection.json"
+) -Raw -Encoding UTF8
+foreach ($contractMarker in @(
+    "pm.collectionVariables.set('camera_etag'",
+    "enable_dead_letter_replay",
+    "pm.execution.skipRequest()"
+)) {
+    if (-not $postmanCollection.Contains($contractMarker)) {
+        throw "P6 Postman lifecycle/replay guard is missing: $contractMarker"
+    }
+}
+$postmanEnvironment = Get-Content -LiteralPath (
+    Join-Path $postmanRoot "vision_project_p5.local.postman_environment.json"
+) -Raw -Encoding UTF8 | ConvertFrom-Json
+$replayVariable = @($postmanEnvironment.values |
+    Where-Object { $_.key -eq "enable_dead_letter_replay" })
+if ($replayVariable.Count -ne 1 -or $replayVariable[0].value -ne "false") {
+    throw "P6 Postman dead-letter replay must default to false"
+}
+$p6Script = Get-Content -LiteralPath (
+    Join-Path $ProjectRoot "scripts\verify_algorithm_service_p6.ps1"
+) -Raw -Encoding UTF8
+foreach ($contractMarker in @(
+    "YOLO11_CAMERA_ENTRY_URL",
+    "New-AcceptanceConfig",
+    "CaptureHostTelemetry",
+    "exercise_worker_restart.ps1",
+    "exercise_rtsp_reconnect.ps1",
+    "exercise_dead_letter_replay.ps1",
+    "disposable_infrastructure_removed"
+)) {
+    if (-not $p6Script.Contains($contractMarker)) {
+        throw "P6 hardware acceptance guard is missing: $contractMarker"
+    }
+}
+if ($p6Script -match '(?i)rtsp[s]?://[^*{\s]+:[^@{\s]+@') {
+    throw "P6 acceptance script must not contain embedded RTSP credentials"
+}
+$deadLetterExercise = Get-Content -LiteralPath (
+    Join-Path $ProjectRoot "scripts\exercise_dead_letter_replay.ps1"
+) -Raw -Encoding UTF8
+foreach ($deadLetterMarker in @(
+    "Reset-Mock 100",
+    "final_status",
+    "receiver_observed"
+)) {
+    if (-not $deadLetterExercise.Contains($deadLetterMarker)) {
+        throw "P6 dead-letter acceptance invariant is missing: $deadLetterMarker"
+    }
+}
 $mockBackend = Join-Path $ProjectRoot "scripts\mock_callback_backend.js"
 & node --check $mockBackend
 if ($LASTEXITCODE -ne 0) { throw "P5 mock callback JavaScript syntax failed" }
 & (Join-Path $PSScriptRoot "test_mock_callback_backend.ps1") -Root $ProjectRoot
 if ($LASTEXITCODE -ne 0) { throw "P5 mock callback acceptance failed" }
 
-Write-Host "PASS: Camera Frame M0-M11 and Algorithm Service P5 architecture, security, backend, Postman, and callback guards passed." `
+Write-Host "PASS: Camera Frame M0-M11 and Algorithm Service P5/P6 architecture, security, backend, Postman, and callback guards passed." `
     -ForegroundColor Green

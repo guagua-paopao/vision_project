@@ -2,6 +2,8 @@
 param(
     [string]$Root = "",
     [string]$BuildDir = ".\out\build\backend-Release",
+    [string]$ServerConfig = ".\config\server.yaml",
+    [string]$WorkerConfig = ".\config\worker.yaml",
     [string]$QtBuildDir = ".\out\build\qt-client-Release",
     [string]$CudaRoot = "D:\GPU13.3",
     [string]$TensorRtRoot = "D:\TensorRT-10.16.1.11",
@@ -58,6 +60,23 @@ $workerExe = Join-Path $BackendPath "four_stage_worker.exe"
 foreach ($exe in @($serverExe, $workerExe)) {
     if (-not (Test-Path -LiteralPath $exe)) { throw "Build output missing: $exe" }
 }
+$serverConfigPath = if ([IO.Path]::IsPathRooted($ServerConfig)) {
+    [IO.Path]::GetFullPath($ServerConfig)
+}
+else {
+    [IO.Path]::GetFullPath((Join-Path $ProjectRoot $ServerConfig))
+}
+$workerConfigPath = if ([IO.Path]::IsPathRooted($WorkerConfig)) {
+    [IO.Path]::GetFullPath($WorkerConfig)
+}
+else {
+    [IO.Path]::GetFullPath((Join-Path $ProjectRoot $WorkerConfig))
+}
+foreach ($configPath in @($serverConfigPath, $workerConfigPath)) {
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        throw "Runtime configuration missing: $configPath"
+    }
+}
 
 $pidDir = Join-Path $ProjectRoot "runtime\pids"
 $logDir = Join-Path $ProjectRoot "runtime\logs\process"
@@ -75,9 +94,10 @@ function Start-LoggedProcess([string]$Name, [string]$Exe, [string[]]$Arguments) 
 }
 
 $processes = @()
-$processes += Start-LoggedProcess "worker" $workerExe @("config\worker.yaml", "--consumer-name", "people_flow_worker_1")
+$processes += Start-LoggedProcess "worker" $workerExe @(
+    $workerConfigPath, "--consumer-name", "people_flow_worker_1")
 Start-Sleep -Seconds 2
-$processes += Start-LoggedProcess "server" $serverExe @("config\server.yaml")
+$processes += Start-LoggedProcess "server" $serverExe @($serverConfigPath)
 
 $readyUrl = "http://127.0.0.1:8087/api/v1/ready"
 $deadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
@@ -106,7 +126,12 @@ if (-not $SkipQt) {
 }
 
 $pidFile = Join-Path $pidDir "demo.json"
-[ordered]@{ started_at=(Get-Date).ToString("s"); processes=$processes } |
+[ordered]@{
+    started_at=(Get-Date).ToString("s")
+    server_config=$serverConfigPath
+    worker_config=$workerConfigPath
+    processes=$processes
+} |
     ConvertTo-Json -Depth 6 | Set-Content -Path $pidFile -Encoding UTF8
 Write-Host "PASS: PostgreSQL + Redis -> TensorRT worker -> HTTP -> Qt demo is ready." -ForegroundColor Green
 Write-Host "In Qt click Check Service, then Start Session."

@@ -134,8 +134,10 @@ Populate the environment's secret variables locally; do not export a filled
 environment. The collection covers readiness, Camera CRUD, optimistic update,
 start/stop, Run and alert audit, unified JSON/Prometheus metrics, dead-letter
 inspection, and mock-backend inspection. Dead-letter replay is disabled in the
-collection runner and must be invoked manually after reviewing the selected
-entry.
+collection runner by `enable_dead_letter_replay=false` and a pre-request skip
+guard. It must be enabled manually only after reviewing the selected entry.
+The Stop request refreshes the collection ETag before Delete, so the lifecycle
+runner retains optimistic concurrency protection.
 
 With Server, Worker, the real camera, and the mock backend running, the complete
 live chain is a single command:
@@ -152,6 +154,60 @@ checks unified metrics, waits until the signed alert appears at the mock
 backend, validates Run history, and soft-deletes the temporary Camera in
 `finally`. `-ControlPlaneOnly` skips the real-alert wait; it is not sufficient
 for the P6 hardware release gate.
+
+### P6 target-hardware acceptance
+
+P6 uses the real RTSP source and installed TensorRT engine while keeping all
+credentials process-local. It creates disposable PostgreSQL 17 and Redis 7
+containers on random loopback ports, generates random admin/HMAC/control
+tokens, enables the loopback callback only in temporary configs under
+`out/tmp`, and removes the configs and containers in `finally`.
+
+Prerequisites are Docker Desktop, Node.js, FFmpeg, `nvidia-smi`, the Postman
+desktop application, and a Postman collection runner. The script defaults to
+`npx.cmd --yes newman`; the first run can download Newman from npm. Supply the
+RTSP URI without placing it in shell history:
+
+```powershell
+$secureRtsp = Read-Host "P6 RTSP URI" -AsSecureString
+$credential = [System.Net.NetworkCredential]::new("", $secureRtsp)
+$env:YOLO11_CAMERA_ENTRY_URL = $credential.Password
+try {
+  powershell -ExecutionPolicy Bypass `
+    -File .\scripts\verify_algorithm_service_p6.ps1 `
+    -CameraProfile entry_camera_01 `
+    -CallbackProfile backend_primary `
+    -DurationMinutes 60
+}
+finally {
+  Remove-Item Env:YOLO11_CAMERA_ENTRY_URL -ErrorAction SilentlyContinue
+  $credential = $null
+  $secureRtsp.Dispose()
+}
+```
+
+The gate runs the engine hash/load smoke, RTSP single-open smoke,
+TensorRT+FFmpeg inference, Worker restart recovery, controlled shared-reader
+reconnect, a shared People Flow session, durable dead-letter replay, the signed
+live-alert chain, the exported Postman collection, and a 60-minute soak. Soak evidence
+samples readiness, per-camera Pipeline state, Hub open/reconnect/subscriber
+invariants, fixed inference workers, callback state, process CPU/working set,
+GPU memory/utilization/temperature, and disk use every five seconds.
+
+Evidence is written below `reports/p6/<UTC stamp>` and
+`reports/p6/soak/<UTC stamp>`. It contains no RTSP URI, database password,
+Bearer token, or callback HMAC secret. Diagnostic switches such as
+`-SkipPostman`, `-SkipLiveAlert`, `-SkipWorkerRestart`,
+`-SkipRtspReconnect`, `-SkipDeadLetterReplay`, and `-SkipSoak` do not
+close the P6 release gate.
+
+Worker crash recovery is lease-fenced. Each Redis lease contains both the Run
+ID and a unique Worker-instance token. A replacement Worker can therefore wait
+up to `camera_tasks.lease_ttl_seconds + 5` seconds before it owns recovery. It
+then records the prior Run as `WORKER_RESTARTED` and creates a new durable Run
+for every enabled Camera whose desired state is still `running`. On Windows,
+each FFmpeg reader is held in a kill-on-close Job Object so a forced Worker exit
+does not leave an orphan decoder.
 
 ### Dead-letter operations
 

@@ -64,7 +64,7 @@ function Invoke-Api {
 }
 
 function Read-Json {
-    param([Microsoft.PowerShell.Commands.HtmlWebResponseObject]$Response)
+    param([object]$Response)
     if (-not $Response.Content) { return $null }
     return $Response.Content | ConvertFrom-Json
 }
@@ -170,7 +170,8 @@ try {
     if (-not $metrics.algorithm_runtime.available -or
         $metrics.algorithm_runtime.runtime_stale -or
         $metrics.algorithm_runtime.inference.workers_ready -lt 1 -or
-        -not $metrics.algorithm_runtime.callbacks.running) {
+        (-not $ControlPlaneOnly -and
+         -not $metrics.algorithm_runtime.callbacks.running)) {
         throw "unified runtime metrics did not expose ready components"
     }
 
@@ -212,14 +213,45 @@ finally {
         }
         catch {
         }
+        for ($attempt = 0; $attempt -lt 30; ++$attempt) {
+            try {
+                $status = Read-Json (
+                    Invoke-Api -Method GET `
+                        -Path "/cameras/$CameraId/status")
+                if ($status.status -notin @(
+                        "queued",
+                        "starting",
+                        "running",
+                        "reconnecting",
+                        "stopping"
+                    )) {
+                    break
+                }
+            }
+            catch {
+                break
+            }
+            Start-Sleep -Seconds 1
+        }
         try {
             $current = Invoke-Api -Method GET -Path "/cameras/$CameraId"
-            $etag = $current.Headers["ETag"].Trim('"')
+            $currentBody = Read-Json $current
+            $etag = [string]$currentBody.camera.version
             Invoke-Api -Method DELETE -Path "/cameras/$CameraId" `
                 -ExtraHeaders @{ "If-Match" = "`"$etag`"" } | Out-Null
         }
         catch {
-            Write-Warning "P5 acceptance camera cleanup needs manual review: $CameraId"
+            $cleanupStatus = if ($_.Exception.Response -and
+                $_.Exception.Response.StatusCode) {
+                [int]$_.Exception.Response.StatusCode
+            }
+            else {
+                0
+            }
+            Write-Warning (
+                "P5 acceptance camera cleanup needs manual review: " +
+                "$CameraId (HTTP $cleanupStatus)"
+            )
         }
     }
 }

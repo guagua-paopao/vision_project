@@ -85,6 +85,7 @@ void closeHandle(HANDLE& handle) noexcept {
 struct ChildProcess {
     HANDLE process = nullptr;
     HANDLE stdout_read = nullptr;
+    HANDLE job = nullptr;
 };
 
 bool writeAll(HANDLE pipe, const std::string& bytes) {
@@ -170,6 +171,7 @@ bool launchFfmpegProcess(
     HANDLE child_stdout_write = nullptr;
     HANDLE null_output = INVALID_HANDLE_VALUE;
     PROCESS_INFORMATION process_info{};
+    HANDLE process_job = nullptr;
 
     auto cleanup = [&]() noexcept {
         closeHandle(child_stdin_read);
@@ -179,6 +181,7 @@ bool launchFfmpegProcess(
         closeHandle(null_output);
         closeHandle(process_info.hThread);
         closeHandle(process_info.hProcess);
+        closeHandle(process_job);
     };
 
     if (!CreatePipe(&child_stdin_read, &parent_stdin_write, &attributes, 0) ||
@@ -210,9 +213,27 @@ bool launchFfmpegProcess(
     std::vector<wchar_t> mutable_command(command.begin(), command.end());
     mutable_command.push_back(L'\0');
     if (!CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, TRUE,
-        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process_info)) {
+        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &startup,
+        &process_info)) {
         cleanup();
         error = "failed to start FFmpeg executable";
+        return false;
+    }
+    process_job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_limits{};
+    job_limits.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!process_job ||
+        !SetInformationJobObject(
+            process_job,
+            JobObjectExtendedLimitInformation,
+            &job_limits,
+            sizeof(job_limits)) ||
+        !AssignProcessToJobObject(process_job, process_info.hProcess) ||
+        ResumeThread(process_info.hThread) == static_cast<DWORD>(-1)) {
+        TerminateProcess(process_info.hProcess, 1);
+        cleanup();
+        error = "failed to contain FFmpeg process in a kill-on-close job";
         return false;
     }
 
@@ -239,8 +260,10 @@ bool launchFfmpegProcess(
 
     child.process = process_info.hProcess;
     child.stdout_read = parent_stdout_read;
+    child.job = process_job;
     process_info.hProcess = nullptr;
     parent_stdout_read = nullptr;
+    process_job = nullptr;
     return true;
 }
 
@@ -554,6 +577,7 @@ void FfmpegProcessCaptureReader::captureLoop() noexcept {
                 if (process_handle_ == child.process) process_handle_ = nullptr;
                 closeHandle(child.process);
             }
+            closeHandle(child.job);
             if (stop_requested_.load()) break;
 
             ++consecutive_failures;

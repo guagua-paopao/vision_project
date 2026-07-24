@@ -10,7 +10,7 @@ const port = Number.parseInt(
 );
 const secret = process.env.YOLO11_MOCK_CALLBACK_SECRET || "";
 const controlToken = process.env.YOLO11_MOCK_CALLBACK_CONTROL_TOKEN || "";
-const failFirst = Math.max(
+let failFirst = Math.max(
   0,
   Number.parseInt(process.env.YOLO11_MOCK_CALLBACK_FAIL_FIRST || "0", 10),
 );
@@ -215,9 +215,45 @@ const server = http.createServer((request, response) => {
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/test/reset") {
-    attempts.clear();
-    accepted.clear();
-    jsonResponse(response, 200, { success: true });
+    readBody(request, response, (body) => {
+      let input = {};
+      if (body.length > 0) {
+        try {
+          input = JSON.parse(body.toString("utf8"));
+        } catch {
+          jsonResponse(response, 400, {
+            success: false,
+            error_code: "INVALID_JSON",
+          });
+          return;
+        }
+      }
+      if (
+        !input ||
+        typeof input !== "object" ||
+        Array.isArray(input) ||
+        Object.keys(input).some((key) => key !== "fail_first") ||
+        (Object.hasOwn(input, "fail_first") &&
+          (!Number.isInteger(input.fail_first) ||
+            input.fail_first < 0 ||
+            input.fail_first > 100))
+      ) {
+        jsonResponse(response, 400, {
+          success: false,
+          error_code: "INVALID_RESET_CONFIG",
+        });
+        return;
+      }
+      if (Object.hasOwn(input, "fail_first")) {
+        failFirst = input.fail_first;
+      }
+      attempts.clear();
+      accepted.clear();
+      jsonResponse(response, 200, {
+        success: true,
+        fail_first: failFirst,
+      });
+    });
     return;
   }
   jsonResponse(response, 404, {
