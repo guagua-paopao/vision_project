@@ -19,11 +19,13 @@ CameraTaskManager::CameraTaskManager(
     int max_active_runs,
     std::unique_ptr<ICameraTaskCommandSource> command_source,
     CameraTaskSessionFactory session_factory,
-    CameraTaskCommandFailureCallback failure_callback
+    CameraTaskCommandFailureCallback failure_callback,
+    std::vector<CameraTaskCommand> startup_commands
 ) : max_active_runs_(std::max(1, max_active_runs)),
     command_source_(std::move(command_source)),
     session_factory_(std::move(session_factory)),
-    failure_callback_(std::move(failure_callback)) {
+    failure_callback_(std::move(failure_callback)),
+    startup_commands_(std::move(startup_commands)) {
 }
 
 CameraTaskManager::~CameraTaskManager() noexcept {
@@ -109,6 +111,11 @@ std::size_t CameraTaskManager::activePipelineCount() const {
 }
 
 void CameraTaskManager::loop() noexcept {
+    for (const auto& command : startup_commands_) {
+        if (!running_.load()) break;
+        process(command);
+    }
+    startup_commands_.clear();
     while (running_.load()) {
         reapCompleted();
         CameraTaskCommand command;

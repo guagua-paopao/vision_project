@@ -12,6 +12,8 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <random>
+#include <sstream>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -82,6 +84,16 @@ long long nowMs() {
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+std::string makeLeaseOwnerToken(const std::string& consumer_name) {
+    std::random_device random;
+    std::ostringstream value;
+    value << consumer_name << ':' << std::hex
+          << static_cast<unsigned long long>(random()) << ':'
+          << static_cast<unsigned long long>(random()) << ':'
+          << static_cast<unsigned long long>(nowMs());
+    return value.str();
+}
+
 std::string sanitizedCameraError(std::string value) {
     if (value.find("://") != std::string::npos || value.find('@') != std::string::npos ||
         value.find("password") != std::string::npos || value.find("Password") != std::string::npos) {
@@ -101,7 +113,8 @@ CameraTaskQueue::CameraTaskQueue(
     std::string consumer_name
 ) : redis_config_(redis_config),
     camera_config_(camera_config),
-    consumer_name_(std::move(consumer_name)) {
+    consumer_name_(std::move(consumer_name)),
+    lease_owner_token_(makeLeaseOwnerToken(consumer_name_)) {
 }
 
 CameraTaskQueue::~CameraTaskQueue() noexcept {
@@ -334,6 +347,10 @@ std::string CameraTaskQueue::hubStatusKey(const std::string& camera_profile) con
     return "yolo:camera-hub:" + camera_profile + ":status";
 }
 
+std::string CameraTaskQueue::leaseValue(const std::string& run_id) const {
+    return run_id + "|" + lease_owner_token_;
+}
+
 bool CameraTaskQueue::acquireRunLease(
     const std::string& task_id,
     const std::string& run_id,
@@ -347,7 +364,8 @@ bool CameraTaskQueue::acquireRunLease(
         "if not current then redis.call('SET',KEYS[1],ARGV[1],'EX',ARGV[2]); return 1; "
         "elseif current==ARGV[1] then redis.call('EXPIRE',KEYS[1],ARGV[2]); return 2; else return 0 end";
     ReplyPtr reply(static_cast<redisReply*>(redisCommand(
-        context_, "EVAL %s 1 %s %s %d", script, activeKey(task_id).c_str(), run_id.c_str(),
+        context_, "EVAL %s 1 %s %s %d", script, activeKey(task_id).c_str(),
+        leaseValue(run_id).c_str(),
         camera_config_.lease_ttl_seconds)));
     if (replyError(reply.get(), context_, error)) return false;
     if (reply->type != REDIS_REPLY_INTEGER || reply->integer == 0) {
@@ -368,7 +386,7 @@ bool CameraTaskQueue::refreshRunLease(
         "if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('EXPIRE',KEYS[1],ARGV[2]) else return 0 end";
     ReplyPtr reply(static_cast<redisReply*>(redisCommand(
         context_, "EVAL %s 1 %s %s %d", script, activeKey(task_id).c_str(),
-        run_id.c_str(), camera_config_.lease_ttl_seconds)));
+        leaseValue(run_id).c_str(), camera_config_.lease_ttl_seconds)));
     if (replyError(reply.get(), context_, error)) return false;
     if (reply->type != REDIS_REPLY_INTEGER || reply->integer != 1) {
         error = "camera run lease lost";
@@ -387,8 +405,14 @@ bool CameraTaskQueue::releaseRunLease(
     static const char* script =
         "if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) else return 0 end";
     ReplyPtr reply(static_cast<redisReply*>(redisCommand(
-        context_, "EVAL %s 1 %s %s", script, activeKey(task_id).c_str(), run_id.c_str())));
-    return !replyError(reply.get(), context_, error);
+        context_, "EVAL %s 1 %s %s", script, activeKey(task_id).c_str(),
+        leaseValue(run_id).c_str())));
+    if (replyError(reply.get(), context_, error)) return false;
+    if (reply->type != REDIS_REPLY_INTEGER || reply->integer != 1) {
+        error = "camera run lease is not owned by this Worker instance";
+        return false;
+    }
+    return true;
 }
 
 bool CameraTaskQueue::requestStop(const std::string& run_id, std::string& error) {

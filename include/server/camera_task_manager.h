@@ -75,7 +75,8 @@ public:
         int max_active_runs,
         std::unique_ptr<ICameraTaskCommandSource> command_source,
         CameraTaskSessionFactory session_factory,
-        CameraTaskCommandFailureCallback failure_callback = {}
+        CameraTaskCommandFailureCallback failure_callback = {},
+        std::vector<CameraTaskCommand> startup_commands = {}
     );
     ~CameraTaskManager() noexcept;
 
@@ -113,6 +114,7 @@ private:
     std::unique_ptr<ICameraTaskCommandSource> command_source_;
     CameraTaskSessionFactory session_factory_;
     CameraTaskCommandFailureCallback failure_callback_;
+    std::vector<CameraTaskCommand> startup_commands_;
     std::atomic<bool> running_{ false };
     std::thread consumer_thread_;
     mutable std::mutex pipelines_mutex_;

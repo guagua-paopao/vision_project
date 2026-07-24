@@ -143,7 +143,19 @@ try {
         $events.items[0].event_id -ne $eventId) {
         throw "mock backend must store exactly one deduplicated event"
     }
-    Write-Host "PASS: mock callback verifies retry, HMAC, and idempotency." `
+    $reset = Invoke-RestMethod -Method Post `
+        -Uri "$baseUrl/api/test/reset" `
+        -Headers @{ Authorization = "Bearer $controlToken" } `
+        -ContentType "application/json" `
+        -Body '{"fail_first":2}' -TimeoutSec 5
+    if (-not $reset.success -or $reset.fail_first -ne 2) {
+        throw "mock backend must accept authenticated failure reconfiguration"
+    }
+    $health = Invoke-RestMethod -Uri "$baseUrl/health" -TimeoutSec 5
+    if ($health.fail_first -ne 2 -or $health.accepted_events -ne 0) {
+        throw "mock backend reset must clear events and expose failure mode"
+    }
+    Write-Host "PASS: mock callback verifies retry, HMAC, idempotency, and controlled failure injection." `
         -ForegroundColor Green
 }
 finally {

@@ -202,6 +202,37 @@ int main() {
     require(sessions->running.load() == 0, "manager shutdown must join all sessions");
     require(commands->acknowledged.size() == 7,
         "capacity-rejected START must stay pending while accepted/idempotent commands are acknowledged");
+
+    auto recovery_commands = std::make_shared<CommandState>();
+    auto recovery_sessions = std::make_shared<SessionState>();
+    CameraTaskCommand recovery;
+    recovery.task_id = "task_recovered";
+    recovery.run_id = "run_recovered";
+    recovery.camera_profile = "entry";
+    CameraTaskManager recovery_manager(
+        1,
+        std::make_unique<FakeCommandSource>(recovery_commands),
+        [recovery_sessions](const CameraTaskCommand&, std::string& factory_error) {
+            factory_error.clear();
+            return std::make_shared<FakeSession>(recovery_sessions);
+        },
+        {},
+        { recovery });
+    require(recovery_manager.start(error),
+        "manager with a startup recovery command must start");
+    require(waitUntil(
+        [&]() { return recovery_sessions->running.load() == 1; }, 500),
+        "startup recovery command must create a Pipeline before queue polling");
+    require(recovery_manager.activeRunIds() ==
+            std::vector<std::string>{ "run_recovered" },
+        "startup recovery must preserve the new durable run id");
+    {
+        std::lock_guard<std::mutex> lock(recovery_commands->mutex);
+        require(recovery_commands->acknowledged.empty(),
+            "internal startup recovery commands must not acknowledge Redis messages");
+    }
+    recovery_manager.stop();
+
     std::cout << "Camera task manager scheduling tests passed\n";
     return 0;
 }

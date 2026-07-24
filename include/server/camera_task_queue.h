@@ -74,10 +74,12 @@ private:
     std::string stopKey(const std::string& run_id) const;
     std::string statusKey(const std::string& run_id) const;
     std::string hubStatusKey(const std::string& camera_profile) const;
+    std::string leaseValue(const std::string& run_id) const;
 
     RedisSection redis_config_;
     CameraTasksSection camera_config_;
     std::string consumer_name_;
+    std::string lease_owner_token_;
     std::string claim_cursor_ = "0-0";
     std::atomic<bool> interrupted_{ false };
     mutable std::mutex mutex_;

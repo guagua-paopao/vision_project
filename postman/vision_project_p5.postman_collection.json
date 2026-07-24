@@ -464,7 +464,11 @@
                 "exec": [
                   "pm.test('stop is accepted or already idle', function () {",
                   "  pm.expect([200, 202]).to.include(pm.response.code);",
-                  "});"
+                  "});",
+                  "const etag = pm.response.headers.get('ETag');",
+                  "if (etag) {",
+                  "  pm.collectionVariables.set('camera_etag', etag.replaceAll('\"', ''));",
+                  "}"
                 ],
                 "type": "text/javascript"
               }
@@ -663,6 +667,20 @@
             "description": "Run manually only after inspecting the selected dead-letter. The observed attempt is supplied as If-Match to prevent stale or duplicate replay."
           },
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "const enabled = pm.environment.get('enable_dead_letter_replay') === 'true';",
+                  "const outboxId = pm.collectionVariables.get('outbox_id');",
+                  "const attempt = pm.collectionVariables.get('outbox_attempt');",
+                  "if (!enabled || !outboxId || !attempt) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
             {
               "listen": "test",
               "script": {

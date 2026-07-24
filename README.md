@@ -42,6 +42,7 @@ Camera 抽帧功能文档：
 - [P3 固定推理工作池验收](docs/development/ALGORITHM_SERVICE_P3_INFERENCE_POOL.md)
 - [P4 可靠告警回调验收](docs/development/ALGORITHM_SERVICE_P4_ALERT_CALLBACK.md)
 - [P5 集成、可观测性与 Postman 验收](docs/development/ALGORITHM_SERVICE_P5_INTEGRATION.md)
+- [P6 真实硬件验收记录](docs/development/ALGORITHM_SERVICE_P6_RELEASE.md)
 - [P5 Postman 集合](postman/vision_project_p5.postman_collection.json)
 - [P5 Postman 本地环境模板](postman/vision_project_p5.local.postman_environment.json)
 
@@ -155,6 +156,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\backup_runtime.ps1 -Label man
 powershell -ExecutionPolicy Bypass -File .\scripts\restore_runtime.ps1 `
   -BackupPath .\runtime\backups\vision_runtime_<stamp>.zip -ConfirmRestore
 ```
+
+目标硬件 P6 验收使用
+`scripts/verify_algorithm_service_p6.ps1 -DurationMinutes 60`。RTSP URI 必须
+通过当前进程的 `YOLO11_CAMERA_ENTRY_URL` 注入；脚本使用一次性数据库、Redis
+和随机 Token，执行真实告警回调、Postman Collection 与带主机/GPU 遥测的长稳。
 
 GPU 引擎独立冒烟测试：
 
