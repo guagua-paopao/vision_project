@@ -1002,6 +1002,15 @@ bool CameraTaskRepository::insertAlert(
     std::string& error_code,
     std::string& error
 ) const {
+    return insertAlert(alert, {}, error_code, error);
+}
+
+bool CameraTaskRepository::insertAlert(
+    const SecurityAlertEventRecord& alert,
+    const std::string& callback_profile,
+    std::string& error_code,
+    std::string& error
+) const {
     error_code.clear();
     error.clear();
     if (!validServiceIdentifier(alert.event_id, 160) ||
@@ -1016,6 +1025,7 @@ bool CameraTaskRepository::insertAlert(
         alert.fingerprint.empty() || alert.fingerprint.size() > 256 ||
         alert.severity < 1 || alert.severity > 5 || alert.occurred_at_ms <= 0 ||
         alert.created_at_ms <= 0 ||
+        (!callback_profile.empty() && !validServiceIdentifier(callback_profile, 160)) ||
         (alert.confidence && (*alert.confidence < 0.0 || *alert.confidence > 1.0)) ||
         json::parse(alert.payload_json, nullptr, false).is_discarded()) {
         error_code = "INVALID_ALERT";
@@ -1024,12 +1034,22 @@ bool CameraTaskRepository::insertAlert(
     }
     DbPtr db;
     if (!openDatabase(config_, db, error)) return false;
+    if (!execSql(db.get(), "BEGIN;", error)) return false;
+    bool committed = false;
+    const auto rollback = [&]() {
+        if (committed) return;
+        std::string ignored;
+        execSql(db.get(), "ROLLBACK;", ignored);
+    };
     StatementPtr statement;
     if (!prepare(db.get(),
         "INSERT INTO security_alert_events(event_id,task_id,run_id,camera_profile,event_type,category,"
         "severity,confidence,track_id,occurred_at_ms,algorithm_profile,model_name,config_version,"
         "demo_classifier,payload_json,evidence_frame_id,fingerprint,created_at_ms) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?,?);", statement, error)) return false;
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?,?);", statement, error)) {
+        rollback();
+        return false;
+    }
     bindText(statement.get(), 1, alert.event_id);
     bindText(statement.get(), 2, alert.task_id);
     bindText(statement.get(), 3, alert.run_id);
@@ -1051,11 +1071,44 @@ bool CameraTaskRepository::insertAlert(
     else bindText(statement.get(), 16, alert.evidence_frame_id);
     bindText(statement.get(), 17, alert.fingerprint);
     sqlite3_bind_int64(statement.get(), 18, alert.created_at_ms);
-    if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
-    error = sqlite3_errmsg(db.get());
-    error_code = sqlite3_extended_errcode(db.get()) == SQLITE_CONSTRAINT_UNIQUE
-        ? "ALERT_ALREADY_EXISTS" : "STORAGE_UNAVAILABLE";
-    return false;
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db.get());
+        error_code = sqlite3_extended_errcode(db.get()) == SQLITE_CONSTRAINT_UNIQUE
+            ? "ALERT_ALREADY_EXISTS" : "STORAGE_UNAVAILABLE";
+        rollback();
+        return false;
+    }
+
+    if (!callback_profile.empty()) {
+        statement.reset();
+        if (!prepare(db.get(),
+            "INSERT INTO callback_outbox(event_id,callback_profile,status,attempt,next_attempt_at_ms,"
+            "created_at_ms,updated_at_ms) VALUES(?,?,'pending',0,?,?,?);",
+            statement, error)) {
+            error_code = "STORAGE_UNAVAILABLE";
+            rollback();
+            return false;
+        }
+        bindText(statement.get(), 1, alert.event_id);
+        bindText(statement.get(), 2, callback_profile);
+        sqlite3_bind_int64(statement.get(), 3, alert.created_at_ms);
+        sqlite3_bind_int64(statement.get(), 4, alert.created_at_ms);
+        sqlite3_bind_int64(statement.get(), 5, alert.created_at_ms);
+        if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+            error = sqlite3_errmsg(db.get());
+            error_code = "STORAGE_UNAVAILABLE";
+            rollback();
+            return false;
+        }
+    }
+
+    if (!execSql(db.get(), "COMMIT;", error)) {
+        error_code = "STORAGE_UNAVAILABLE";
+        rollback();
+        return false;
+    }
+    committed = true;
+    return true;
 }
 
 bool CameraTaskRepository::getAlert(

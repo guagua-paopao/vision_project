@@ -42,7 +42,7 @@ it only in the `Authorization` header.
     "enabled": true,
     "target_infer_fps": 5.0,
     "algorithm_profile": "security_default",
-    "algorithms": ["people_flow", "ppe_detection"]
+    "algorithms": ["people_flow", "electronic_fence"]
   },
   "callback_profile": "backend_primary"
 }
@@ -75,6 +75,8 @@ The status response also includes a `pipeline` object with
 `sampled_frames`, `last_source_sequence`, `skipped_frames`, and
 `inference_submit_drops`. There is exactly one Pipeline thread per running
 `camera_id`; multiple camera ids on one Profile still share one FrameHub.
+`sample_fps` and `sampled_frames` describe the JPEG extraction cadence only;
+analysis sampling is independent and is accounted for by the inference layer.
 
 ### Update and replace thread
 
@@ -103,7 +105,7 @@ camera is soft-deleted. An active deletion returns `202`; idle deletion returns
 - `POST /cameras/{camera_id}/stop`
 - `GET /cameras/{camera_id}/status`
 - `GET /cameras/{camera_id}/runs?limit=20&offset=0`
-- `GET /cameras/{camera_id}/alerts?event_type=ppe_violation&minimum_severity=3&limit=20&offset=0`
+- `GET /cameras/{camera_id}/alerts?event_type=PEOPLE_FLOW_IN&minimum_severity=1&limit=20&offset=0`
 - `GET /cameras/{camera_id}/latest-frame`
 
 START/STOP accept `Idempotency-Key` and are also resource-idempotent when the

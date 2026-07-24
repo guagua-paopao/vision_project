@@ -77,6 +77,17 @@ camera_tasks:
     algorithms: []
     callback_profile: ""
 
+analysis:
+  enabled: true
+  inference_workers: 2
+  model_init_timeout_ms: 120000
+  supported_algorithms:
+    - "people_flow"
+    - "security"
+    - "electronic_fence"
+    - "pose_action"
+    - "temporal_action"
+
 people_flow:
   enabled: true
   camera_id: "entry_camera_01"

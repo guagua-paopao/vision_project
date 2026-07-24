@@ -23,6 +23,7 @@ struct CameraFrameJob {
     long long capture_time_ms = 0;
     std::string algorithm_profile;
     std::vector<std::string> algorithms;
+    std::string callback_profile;
     SharedCameraFrame frame;
 };
 

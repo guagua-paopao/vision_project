@@ -2,7 +2,7 @@
 
 这是从完整视觉项目中提取的可独立构建小型仓库，保留一条完整链路：
 
-`Qt/API → HTTP Server → Redis Streams → four_stage_worker → 共享 RTSP FrameHub → People Flow + 无 GPU 抽帧`
+`Qt/API → HTTP Server → Redis Streams → four_stage_worker → 共享 RTSP FrameHub → 每摄像头 Pipeline → 固定推理池 → 告警/outbox`
 
 项目面向学习和完整流程体验，不以正式生产上线为目标。
 
@@ -13,6 +13,8 @@
 - TensorRT 10 + CUDA 加速推理；
 - 人物追踪、过线计数、电子围栏、Pose 规则和时序 DEMO；
 - 同一 Profile 的 People Flow 和多个摄像头抽帧线程共享一次 FFmpeg 解码；
+- 每个活动摄像头一条 Pipeline 线程，使用固定 W 个模型 runner 的推理池，不随摄像头数量增长；
+- 每摄像头有状态算法分析，告警与 callback outbox 在同一个 PostgreSQL 事务落库；
 - 通过稳定 `camera_id` 完成摄像头 CRUD；新增/修改/删除分别启动、替换、关闭抽帧线程；
 - 内部抽帧 Run、latest/archive/both、保留清理与只读 Hub 诊断，不暴露抽帧任务 CRUD；
 - `/camera-admin` Web 管理端、只读 Camera Profile 与共享 Hub 可视化；
@@ -35,6 +37,8 @@ Camera 抽帧功能文档：
 - [项目设计](docs/CAMERA_FFMPEG_FRAME_TASK_DESIGN.md)
 - [M0–M11 开发日志](docs/development/README.md)
 - [M11 Camera ID + PostgreSQL 设计](docs/CAMERA_INSTANCE_POSTGRESQL_DESIGN.md)
+- [算法服务 P0–P6 实施索引](docs/development/ALGORITHM_SERVICE_IMPLEMENTATION_INDEX.md)
+- [P3 固定推理工作池验收](docs/development/ALGORITHM_SERVICE_P3_INFERENCE_POOL.md)
 
 ## 目录
 
@@ -107,17 +111,21 @@ powershell -ExecutionPolicy Bypass -File .\scripts\stop_demo.ps1
 RTSP 凭据只存放在进程环境变量 `YOLO11_CAMERA_ENTRY_URL`，不会进入 YAML、
 Redis 消息、HTTP 请求、Qt 设置或 Git 提交。
 
-## 摄像头抽帧线程
+## 摄像头 Pipeline 与固定推理池
 
 当前演示配置已在 Server/Worker 两侧启用内部抽帧 Run。部署时必须保持两侧
 一致，并在进程环境中设置
 `YOLO11_CAMERA_TASK_ADMIN_TOKEN`。第一版必须保持 `worker.worker_num=1`。
 
-抽帧对象线程运行在现有 `four_stage_worker` 内，不新增 `camera_frame_worker`，
-也不调用 TensorRT/CUDA 推理。同 Profile 的 People Flow 和抽帧任务通过
-进程内 FrameHub 共享唯一 reader；断流是摄像头级共享故障域，写盘/编码是
-摄像头抽帧对象级独立故障域。外部只使用 `/api/v1/cameras` 和 `camera_id`；
-`run_id` 仅用于内部执行审计。
+Pipeline 线程运行在现有 `four_stage_worker` 内，不新增 `camera_frame_worker`。
+每个活动 `camera_id` 恰有一条 Pipeline；JPEG 抽帧与分析采用独立 cadence。
+分析帧进入启动时固定的 `analysis.inference_workers=W` 推理池，每个摄像头最多
+保留一个待推理的最新帧，因此不会随输入帧累积无界延迟。摄像头增删改查不会
+动态创建模型实例。
+
+同 Profile 的 People Flow 和多个 Pipeline 通过进程内 FrameHub 共享唯一 reader；
+断流是摄像头级共享故障域，写盘/编码是摄像头对象级故障域。外部只使用
+`/api/v1/cameras` 和 `camera_id`；`run_id` 仅用于内部执行审计。
 
 ## 测试
 

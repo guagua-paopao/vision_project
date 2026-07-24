@@ -30,6 +30,14 @@ int main(int argc, char** argv) {
         !server.capture.allow_backend_fallback, "server FFmpeg Hub invariant must parse");
     require(server.camera_tasks.enabled && server.worker.worker_num == 1,
         "server Camera Task and single-worker configuration must parse");
+    require(server.analysis.enabled && server.analysis.inference_workers == 2 &&
+            server.analysis.model_init_timeout_ms == 120000 &&
+            server.analysis.supported_algorithms ==
+                std::vector<std::string>({
+                    "electronic_fence", "people_flow", "pose_action",
+                    "security", "temporal_action"
+                }),
+        "server fixed inference-pool configuration must parse");
     require(server.people_flow.admin_token_env == server.camera_tasks.admin_token_env &&
             server.people_flow.admin_token_env == "YOLO11_CAMERA_TASK_ADMIN_TOKEN",
         "People Flow control mutations and Camera API must share one bearer-token source");
@@ -53,6 +61,9 @@ int main(int argc, char** argv) {
     const auto worker = AppConfig::loadFromYaml(argv[2]);
     require(worker.camera_tasks.enabled && worker.worker.enabled &&
         worker.worker.worker_num == 1, "worker Camera Task configuration must parse");
+    require(worker.analysis.enabled && worker.analysis.inference_workers == 2 &&
+            worker.analysis.model_init_timeout_ms == 120000,
+        "worker fixed inference-pool configuration must parse");
     require(!worker.camera_tasks.defaults.analysis_enabled &&
             worker.camera_tasks.defaults.target_infer_fps == 5.0 &&
             worker.camera_tasks.defaults.algorithms.empty(),

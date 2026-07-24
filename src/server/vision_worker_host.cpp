@@ -5,6 +5,10 @@
 
 #include <spdlog/spdlog.h>
 
+#include "business/camera_task_repository.h"
+#include "server/camera_algorithm_processor.h"
+#include "server/camera_inference_pool.h"
+#include "server/model_runner.h"
 #include "server/people_flow_inference_worker.h"
 #include "server/rtsp_camera_frame_source.h"
 
@@ -59,9 +63,46 @@ bool VisionWorkerHost::start(std::string& error) {
     }
     std::cerr << "[BOOT] People Flow role started\n";
 
+    if (config_.camera_tasks.enabled && config_.analysis.enabled) {
+        auto algorithm_repository =
+            std::make_shared<CameraTaskRepository>(config_.camera_tasks);
+        camera_algorithm_processor_ = std::make_shared<CameraAlgorithmProcessor>(
+            config_, std::move(algorithm_repository));
+        if (!camera_algorithm_processor_->start(error)) {
+            camera_algorithm_processor_.reset();
+            people_flow_worker_->stop();
+            people_flow_worker_.reset();
+            hub_registry_->stopAll();
+            hub_registry_.reset();
+            return false;
+        }
+        camera_inference_pool_ = std::make_shared<CameraInferencePool>(
+            config_,
+            [model_type = config_.model.type](int) {
+                return createModelRunner(model_type);
+            },
+            camera_algorithm_processor_);
+        if (!camera_inference_pool_->start(error)) {
+            camera_inference_pool_.reset();
+            camera_algorithm_processor_->stop();
+            camera_algorithm_processor_.reset();
+            people_flow_worker_->stop();
+            people_flow_worker_.reset();
+            hub_registry_->stopAll();
+            hub_registry_.reset();
+            return false;
+        }
+        std::cerr << "[BOOT] fixed Camera inference pool started with "
+                  << config_.analysis.inference_workers << " workers\n";
+    }
+
     if (config_.camera_tasks.enabled) {
         if (!camera_manager_factory_) {
             error = "camera task runtime factory is unavailable";
+            if (camera_inference_pool_) camera_inference_pool_->stop();
+            camera_inference_pool_.reset();
+            if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
+            camera_algorithm_processor_.reset();
             people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
@@ -69,10 +110,15 @@ bool VisionWorkerHost::start(std::string& error) {
             return false;
         }
         std::cerr << "[BOOT] creating Camera Task runtime\n";
-        camera_task_manager_ = camera_manager_factory_(hub_registry_);
+        camera_task_manager_ = camera_manager_factory_(
+            hub_registry_, camera_inference_pool_);
         if (!camera_task_manager_ || !camera_task_manager_->start(error)) {
             if (error.empty()) error = "failed to start Camera Task role";
             camera_task_manager_.reset();
+            if (camera_inference_pool_) camera_inference_pool_->stop();
+            camera_inference_pool_.reset();
+            if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
+            camera_algorithm_processor_.reset();
             people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
@@ -87,13 +133,18 @@ bool VisionWorkerHost::start(std::string& error) {
 }
 
 void VisionWorkerHost::stop() noexcept {
-    if (!running_.exchange(false) && !people_flow_worker_ && !camera_task_manager_ && !hub_registry_) {
+    if (!running_.exchange(false) && !people_flow_worker_ && !camera_task_manager_ &&
+        !camera_inference_pool_ && !camera_algorithm_processor_ && !hub_registry_) {
         return;
     }
     try {
         if (camera_task_manager_) camera_task_manager_->stop();
+        if (camera_inference_pool_) camera_inference_pool_->stop();
+        if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
         if (people_flow_worker_) people_flow_worker_->stop();
         camera_task_manager_.reset();
+        camera_inference_pool_.reset();
+        camera_algorithm_processor_.reset();
         people_flow_worker_.reset();
         if (hub_registry_) hub_registry_->stopAll();
         hub_registry_.reset();
@@ -113,6 +164,12 @@ std::vector<CameraHubStatus> VisionWorkerHost::hubSnapshots() const {
 
 std::vector<std::string> VisionWorkerHost::activeCameraRunIds() const {
     return camera_task_manager_ ? camera_task_manager_->activeRunIds() : std::vector<std::string>{};
+}
+
+CameraInferencePoolSnapshot VisionWorkerHost::inferenceSnapshot() const {
+    return camera_inference_pool_
+        ? camera_inference_pool_->snapshot()
+        : CameraInferencePoolSnapshot{};
 }
 
 }  // namespace yolo11_server

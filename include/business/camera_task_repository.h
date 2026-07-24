@@ -129,6 +129,12 @@ public:
         std::string& error_code,
         std::string& error
     ) const;
+    bool insertAlert(
+        const SecurityAlertEventRecord& alert,
+        const std::string& callback_profile,
+        std::string& error_code,
+        std::string& error
+    ) const;
     bool getAlert(
         const std::string& event_id,
         SecurityAlertEventRecord& alert,

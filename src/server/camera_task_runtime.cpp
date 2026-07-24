@@ -58,6 +58,7 @@ std::unique_ptr<CameraTaskManager> createProductionCameraTaskManager(
     const AppConfig& config,
     const std::string& consumer_name,
     std::shared_ptr<SharedCameraFrameHubRegistry> hub_registry,
+    std::shared_ptr<ICameraFrameJobSink> inference_sink,
     std::string& error
 ) {
     error.clear();
@@ -89,7 +90,7 @@ std::unique_ptr<CameraTaskManager> createProductionCameraTaskManager(
     if (!resources->retention->start(error)) return nullptr;
 
     auto source = std::make_unique<SharedCameraCommandSource>(resources->command_queue);
-    auto factory = [resources, hub_registry, config, camera_consumer](
+    auto factory = [resources, hub_registry, inference_sink, config, camera_consumer](
         const CameraTaskCommand& command,
         std::string& factory_error) -> std::shared_ptr<ICameraTaskSession> {
         CameraTaskRunRecord run;
@@ -106,6 +107,10 @@ std::unique_ptr<CameraTaskManager> createProductionCameraTaskManager(
         if (run.task_id != command.task_id || run.camera_profile != command.camera_profile ||
             run.definition_version != command.definition_version) {
             factory_error = "RUN_DEFINITION_MISMATCH";
+            return nullptr;
+        }
+        if (command.analysis_enabled && !inference_sink) {
+            factory_error = "ANALYSIS_POOL_UNAVAILABLE";
             return nullptr;
         }
         if (!resources->runtime_control->acquireRunLease(
@@ -130,7 +135,7 @@ std::unique_ptr<CameraTaskManager> createProductionCameraTaskManager(
         return std::make_shared<CameraPipeline>(
             command, config.camera_tasks, config.capture.stale_frame_timeout_ms,
             camera_consumer, hub_registry, resources->writer, resources->repository,
-            resources->runtime_control);
+            resources->runtime_control, inference_sink);
     };
 
     auto failure = [resources](
