@@ -1,8 +1,10 @@
 # P2 CameraPipeline 阶段记录
 
-> 状态：实现完成，数据库集成复验待执行  
-> 更新日期：2026-07-23（Asia/Shanghai）  
-> 阻塞：本次测试启动的 Docker Desktop 后台进程无响应；强制重启需要用户明确授权
+> 状态：完成
+>
+> 完成日期：2026-07-23（Asia/Shanghai）
+>
+> 退出门禁：PostgreSQL 17 全量回归 12/12 通过，0 失败、0 跳过
 
 ## 1. 当前结果
 
@@ -55,6 +57,7 @@
 6. JPEG 与分析各有 cadence；同一时刻同时到期时只读取一次共享最新帧。
 7. FrameJob 的 source sequence 单调；sink 必须非阻塞。
 8. Pipeline 退出后先释放/排空 writer、发布终态、释放 lease，并 detach 推理 Session。
+9. `sample_fps`/`sampled_frames` 仅统计 JPEG 抽帧；分析采样由 FrameJob 与 P3 worker 指标统计。
 
 ## 4. 变更文件
 
@@ -103,7 +106,7 @@ out\build\backend-Release\people_flow_hub_regression_test.exe
 - stale STOP 不会误停 replacement；
 - Manager shutdown 后活动 Pipeline 数为 0。
 
-## 6. 待完成的退出门槛
+## 6. 退出门禁
 
 `camera_frame_extraction_test` 已更新为直接构造 `CameraPipeline`，并新增以下数据库集成断言：
 
@@ -114,11 +117,22 @@ out\build\backend-Release\people_flow_hub_regression_test.exe
 - Pipeline 停止后 inference sink 已 detach；
 - stale Run 标记失败后只允许一个 replacement generation。
 
-这些目标已编译，但本轮尚未实际执行：Docker Desktop 在 P1 完整 12/12 回归之后进入
-无响应状态。标准 graceful shutdown 未恢复引擎；平台拒绝了未经用户明确授权的强制
-进程重启，因为这可能影响其他本机容器工作流。
+用户明确授权强制重启 Docker Desktop 后，引擎恢复。第一次 PostgreSQL 17 全量回归
+得到 11/12 通过，失败项为 `camera_frame_extraction_test`。根因是
+`sampled_frames` 同时统计 JPEG 与分析 cadence，使开启 10 FPS 分析的 4 FPS 抽帧任务
+计数高于纯 10 FPS 抽帧任务，与 HTTP 抽帧指标语义冲突。
 
-P2 在上述数据库目标实际通过前不得标记 Complete，也不得进入 P3。
+修复后 `sample_fps`/`sampled_frames` 只统计 JPEG 抽帧；分析采样由 FrameJob 和 P3
+worker 指标统计。重新编译后使用新的随机容器名、随机端口和随机密码启动
+`postgres:17-alpine`，最终结果：
+
+- 12/12 passed；
+- 0 failed；
+- 0 skipped；
+- 总耗时 8.48 秒；
+- 临时容器在 `finally` 中删除，测试 DSN 和随机密码未持久化。
+
+P2 退出门禁已关闭，可以进入 P3。
 
 ## 7. 回滚
 

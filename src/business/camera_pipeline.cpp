@@ -274,8 +274,8 @@ void CameraPipeline::runImpl() {
             if (subscription->tryReadLatest(frame) && frame.frame) {
                 const long long age_ms = std::max(0LL, wallNowMs() - frame.frame->capture_time_ms);
                 if (age_ms <= stale_frame_timeout_ms_) {
-                    ++sampled_frames;
                     if (extraction_due) {
+                        ++sampled_frames;
                         FrameArtifactJob job;
                         job.task_id = command_.task_id;
                         job.run_id = command_.run_id;
