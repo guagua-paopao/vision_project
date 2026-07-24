@@ -1,6 +1,6 @@
 # P6 真实硬件验收与发布阶段记录
 
-> 状态：功能与硬件验收完成，待 GitHub 检查点
+> 状态：完成
 >
 > 开始日期：2026-07-24（Asia/Shanghai）
 >
@@ -198,7 +198,7 @@ People Flow 订阅丢失或主机遥测失败都会使长稳失败。
 - [x] 完成真实 dead-letter、人工重放和最终 `delivered` 演练；
 - [x] PostgreSQL 17 + Redis 7 全量 CTest 19/19 和发布守卫；
 - [x] Postman 18 请求、16 断言、0 失败；
-- 发布 P6 分支与草稿 PR，并在本记录追加提交和 PR 链接。
+- [x] 发布 P6 分支与草稿 PR，并在本记录追加提交和 PR 链接。
 
 本次发布目标是用户提供的单个物理 Camera Profile，因此第二个物理摄像头
 不属于本次发布门禁。未来扩展为多物理 Profile 时，必须单独补充并发和资源
@@ -220,4 +220,14 @@ P6 当前不修改数据库 schema 或生产安全默认值。回滚步骤：
 
 ## 9. GitHub 检查点
 
-P6 完成并发布后追加分支、实现提交、文档提交和草稿 PR。
+- 分支：`agent/p6-hardware-acceptance`
+- 实现提交：
+  [`863d88a7e6a2d0c16d62914116f8125a817a5e50`](https://github.com/guagua-paopao/vision_project/commit/863d88a7e6a2d0c16d62914116f8125a817a5e50)
+- 草稿 PR：
+  [guagua-paopao/vision_project#6](https://github.com/guagua-paopao/vision_project/pull/6)
+- PR 基线：`agent/p5-integration-observability` /
+  `b8f7ebf6bb105e5b5e8ac6bcc804c3fcc7dd896c`
+
+实现提交冻结 P6 代码、测试和首次目标硬件证据；本次纯文档检查点只补充
+GitHub 链接与完成状态，不改变实现提交对应的验收结论。堆叠合并顺序为
+PR #5 → PR #6；P5 进入目标分支后，再将 PR #6 的 base 调整到该目标分支。
