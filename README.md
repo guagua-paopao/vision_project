@@ -41,6 +41,9 @@ Camera 抽帧功能文档：
 - [算法服务 P0–P6 实施索引](docs/development/ALGORITHM_SERVICE_IMPLEMENTATION_INDEX.md)
 - [P3 固定推理工作池验收](docs/development/ALGORITHM_SERVICE_P3_INFERENCE_POOL.md)
 - [P4 可靠告警回调验收](docs/development/ALGORITHM_SERVICE_P4_ALERT_CALLBACK.md)
+- [P5 集成、可观测性与 Postman 验收](docs/development/ALGORITHM_SERVICE_P5_INTEGRATION.md)
+- [P5 Postman 集合](postman/vision_project_p5.postman_collection.json)
+- [P5 Postman 本地环境模板](postman/vision_project_p5.local.postman_environment.json)
 
 ## 目录
 

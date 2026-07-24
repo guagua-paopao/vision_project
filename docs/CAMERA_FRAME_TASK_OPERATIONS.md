@@ -94,6 +94,79 @@ The receiver must verify the HMAC headers described in
 `CAMERA_FRAME_TASK_API.md`, enforce timestamp freshness, and deduplicate by
 `event_id`.
 
+### Local callback receiver and Postman
+
+P5 includes a dependency-free Node.js receiver. It binds only to loopback,
+requires a control token for its test inspection routes, verifies the callback
+HMAC and timestamp, and deduplicates accepted `event_id` values:
+
+```powershell
+$callbackSecret = Read-Host "Mock callback HMAC secret" -AsSecureString
+$callbackCredential = [System.Net.NetworkCredential]::new("", $callbackSecret)
+$controlSecret = Read-Host "Mock control token" -AsSecureString
+$controlCredential = [System.Net.NetworkCredential]::new("", $controlSecret)
+$env:YOLO11_MOCK_CALLBACK_SECRET = $callbackCredential.Password
+$env:YOLO11_MOCK_CALLBACK_CONTROL_TOKEN = $controlCredential.Password
+$env:YOLO11_MOCK_CALLBACK_PORT = "9095"
+$env:YOLO11_MOCK_CALLBACK_FAIL_FIRST = "1"
+node .\scripts\mock_callback_backend.js
+```
+
+Use the same HMAC value for
+`YOLO11_CALLBACK_BACKEND_PRIMARY_SECRET`, set
+`YOLO11_CALLBACK_BACKEND_PRIMARY_URL` to
+`http://127.0.0.1:9095/api/v1/algorithm-alerts`, and enable
+`allow_insecure_http` only in the loopback test profile.
+
+The receiver itself has a deterministic acceptance script:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File .\scripts\test_mock_callback_backend.ps1
+```
+
+Import both files into Postman:
+
+- `postman/vision_project_p5.postman_collection.json`
+- `postman/vision_project_p5.local.postman_environment.json`
+
+Populate the environment's secret variables locally; do not export a filled
+environment. The collection covers readiness, Camera CRUD, optimistic update,
+start/stop, Run and alert audit, unified JSON/Prometheus metrics, dead-letter
+inspection, and mock-backend inspection. Dead-letter replay is disabled in the
+collection runner and must be invoked manually after reviewing the selected
+entry.
+
+With Server, Worker, the real camera, and the mock backend running, the complete
+live chain is a single command:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File .\scripts\verify_algorithm_service_p5.ps1 `
+  -CameraProfile entry_camera_01 `
+  -CallbackProfile backend_primary
+```
+
+It creates a temporary Camera, updates and starts it, waits for a live Pipeline,
+checks unified metrics, waits until the signed alert appears at the mock
+backend, validates Run history, and soft-deletes the temporary Camera in
+`finally`. `-ControlPlaneOnly` skips the real-alert wait; it is not sufficient
+for the P6 hardware release gate.
+
+### Dead-letter operations
+
+1. Query
+   `GET /api/v1/operations/callbacks?status=dead_letter&limit=20`.
+2. Inspect `event_id`, `camera_id`, profile, HTTP status, stable error code,
+   response hash, and `attempt`.
+3. Correct the external dependency or profile configuration.
+4. POST `/api/v1/operations/callbacks/{outbox_id}/replay` with
+   `If-Match: "<attempt>"` and `{}`.
+5. Confirm the response is 202 and then observe `retry` → `delivered`.
+
+Replay resets only the automatic attempt budget. It does not alter the stable
+event ID, so the receiver's idempotency rule remains mandatory.
+
 ## Camera lifecycle contract
 
 All routes require `Authorization: Bearer <admin token>`.
@@ -113,7 +186,9 @@ routes.
 
 ## Acceptance sequence
 
-1. Confirm `GET /api/v1/ready` reports `ready: true`.
+1. Confirm `GET /api/v1/ready` reports `ready: true`,
+   `algorithm_runtime_fresh=true`, `inference_pool_ready=true`, and
+   `callback_delivery_ready=true`.
 2. Open `http://127.0.0.1:8087/camera-admin`, save the Bearer token locally,
    and create an enabled Camera such as `entrance_extract_01`.
 3. Confirm its status becomes `running` and `latest-frame` returns a JPEG.

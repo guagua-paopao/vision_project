@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "server/algorithm_runtime_snapshot.h"
+
 #include "business/people_flow_types.h"
 #include "server/app_config.h"
 
@@ -163,6 +165,7 @@ namespace yolo11_server {
         long long last_heartbeat_ms = 0;
         long long last_heartbeat_age_ms = -1;
         std::string last_error;
+        AlgorithmRuntimeSnapshot algorithm_runtime;
     };
 
     struct StreamStartRequest {

@@ -179,7 +179,35 @@ int main() {
     hub.snapshot.last_error = "rtsp://user:password@example.invalid/secret";
     control->hubs[enabled.id] = hub;
 
-    CameraTaskHttpController controller(config, repository, control, "contract-secret");
+    AlgorithmRuntimeSnapshot algorithm_runtime;
+    algorithm_runtime.generated_at_ms = nowMs();
+    algorithm_runtime.host_running = true;
+    algorithm_runtime.active_pipelines = 1;
+    algorithm_runtime.inference_configured = true;
+    algorithm_runtime.inference_running = true;
+    algorithm_runtime.inference_workers_configured = 2;
+    algorithm_runtime.inference_workers_ready = 2;
+    algorithm_runtime.inference_processed_jobs = 42;
+    algorithm_runtime.processor_running = true;
+    algorithm_runtime.processor_processed_frames = 42;
+    algorithm_runtime.processor_persisted_alerts = 2;
+    algorithm_runtime.callbacks_configured = true;
+    algorithm_runtime.callback_running = true;
+    algorithm_runtime.callback_profiles_ready = 1;
+    algorithm_runtime.callback_delivered = 7;
+    CameraTaskHttpController controller(
+        config,
+        repository,
+        control,
+        "contract-secret",
+        {},
+        [&algorithm_runtime](
+            AlgorithmRuntimeSnapshot& output,
+            std::string& runtime_error) {
+            output = algorithm_runtime;
+            runtime_error.clear();
+            return true;
+        });
     require(controller.initialize(error), "HTTP controller must initialize: " + error);
     const auto health = controller.health();
     require(health.initialized && health.token_configured && health.storage_ok &&
@@ -382,6 +410,71 @@ int main() {
             responseBody(response)["items"][0]["delivery"]["status"] == "not_scheduled",
         "Camera alert query must expose the normalized event and delivery state");
 
+    SecurityAlertEventRecord failed_callback_alert = alert;
+    failed_callback_alert.event_id = "evt_contract_callback_dead";
+    failed_callback_alert.event_type = "fall_detection";
+    failed_callback_alert.fingerprint =
+        "entrance_extract_01:fall_detection:22:56";
+    failed_callback_alert.occurred_at_ms = nowMs();
+    failed_callback_alert.created_at_ms =
+        failed_callback_alert.occurred_at_ms;
+    require(repository->insertAlert(
+            failed_callback_alert,
+            "backend_primary",
+            alert_code,
+            error),
+        "dead-letter fixture alert and outbox must persist: " + error);
+    CallbackOutboxRecord claimed_callback;
+    bool claimed = false;
+    const long long callback_now = nowMs() + 100;
+    require(repository->claimDueCallback(
+            callback_now,
+            5000,
+            claimed_callback,
+            claimed,
+            error) &&
+            claimed,
+        "dead-letter fixture callback must be claimed: " + error);
+    require(repository->finishCallbackAttempt(
+            claimed_callback.outbox_id,
+            claimed_callback.attempt,
+            "dead_letter",
+            callback_now,
+            callback_now,
+            400,
+            "CALLBACK_HTTP_400",
+            std::string(64, 'a'),
+            error),
+        "dead-letter fixture callback must finish: " + error);
+
+    response = controller.listCallbackDeliveries(
+        request({}, true, "?status=dead_letter&camera_id=entrance_extract_01"));
+    require(response.code == 200 &&
+            responseBody(response)["items"].size() == 1 &&
+            responseBody(response)["items"][0]["event_id"] ==
+                failed_callback_alert.event_id &&
+            responseBody(response)["items"][0]["attempt"] == 1 &&
+            responseBody(response)["items"][0]["last_http_status"] == 400,
+        "operations callback query must expose bounded dead-letter audit metadata");
+    const std::string outbox_id = std::to_string(
+        responseBody(response)["items"][0]["outbox_id"].get<long long>());
+    response = controller.replayCallbackDelivery(request(), outbox_id);
+    require(response.code == 428 &&
+            responseBody(response)["error_code"] == "PRECONDITION_REQUIRED",
+        "dead-letter replay must require the observed attempt as If-Match");
+    auto replay_request = request();
+    replay_request.add_header("If-Match", "\"1\"");
+    response = controller.replayCallbackDelivery(replay_request, outbox_id);
+    require(response.code == 202 &&
+            responseBody(response)["previous_attempt"] == 1 &&
+            responseBody(response)["delivery"]["status"] == "retry" &&
+            responseBody(response)["delivery"]["attempt"] == 0,
+        "matching dead-letter replay must atomically reset the retry budget");
+    response = controller.replayCallbackDelivery(replay_request, outbox_id);
+    require(response.code == 409 &&
+            responseBody(response)["error_code"] == "CALLBACK_REPLAY_CONFLICT",
+        "stale replay must fail without scheduling duplicate work");
+
     const auto latest_directory = root / "output" / std::filesystem::u8path(camera_id);
     std::filesystem::create_directories(latest_directory);
     {
@@ -399,9 +492,22 @@ int main() {
         "Hub list must expose shared decode state");
     response = controller.operationsMetrics(request());
     require(response.code == 200 && responseBody(response)["profiles"]["active_hubs"] == 1 &&
-            responseBody(response)["alerts"]["total"] == 1 &&
+            responseBody(response)["alerts"]["total"] == 2 &&
+            responseBody(response)["callback_outbox"]["retry"] == 1 &&
+            responseBody(response)["algorithm_runtime"]["available"] == true &&
+            responseBody(response)["algorithm_runtime"]["inference"]["workers_ready"] == 2 &&
+            responseBody(response)["algorithm_runtime"]["callbacks"]["delivered"] == 7 &&
             responseBody(response)["invariants"]["subscriber_count_matches_types"] == true,
-        "operations metrics must merge PostgreSQL alert, filesystem, and shared-Hub state");
+        "operations metrics must merge durable, Hub, inference, processor, and callback state");
+    response = controller.prometheusMetrics(request());
+    require(response.code == 200 &&
+            response.body.find(
+                "yolo11_callback_outbox{state=\"retry\"} 1") !=
+                std::string::npos &&
+            response.body.find(
+                "yolo11_algorithm_inference_workers{state=\"ready\"} 2") !=
+                std::string::npos,
+        "Prometheus output must expose durable callback and hot algorithm metrics");
 
     auto delete_request = request();
     delete_request.add_header("If-Match", "\"99\"");

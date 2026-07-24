@@ -35,3 +35,4 @@ M0-M11 FrameHub history stays immutable:
 - [P2 per-camera CameraPipeline](ALGORITHM_SERVICE_P2_CAMERA_PIPELINE.md)
 - [P3 fixed inference worker pool](ALGORITHM_SERVICE_P3_INFERENCE_POOL.md)
 - [P4 durable alert callback](ALGORITHM_SERVICE_P4_ALERT_CALLBACK.md)
+- [P5 integration, observability, and Postman](ALGORITHM_SERVICE_P5_INTEGRATION.md)

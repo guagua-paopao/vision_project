@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "server/algorithm_runtime_snapshot.h"
 #include "server/app_config.h"
 #include "server/callback_delivery_worker.h"
 #include "server/camera_inference_pool.h"
@@ -48,6 +49,7 @@ public:
     std::vector<std::string> activeCameraRunIds() const;
     CameraInferencePoolSnapshot inferenceSnapshot() const;
     CallbackDeliverySnapshot callbackSnapshot() const;
+    AlgorithmRuntimeSnapshot algorithmRuntimeSnapshot() const;
 
 private:
     int worker_id_ = 0;

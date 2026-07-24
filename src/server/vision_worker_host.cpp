@@ -1,5 +1,6 @@
 #include "server/vision_worker_host.h"
 
+#include <chrono>
 #include <iostream>
 #include <utility>
 
@@ -166,6 +167,8 @@ bool VisionWorkerHost::start(std::string& error) {
     }
 
     running_.store(true);
+    people_flow_worker_->setAlgorithmRuntimeProvider(
+        [this]() { return algorithmRuntimeSnapshot(); });
     return true;
 }
 
@@ -176,6 +179,9 @@ void VisionWorkerHost::stop() noexcept {
         return;
     }
     try {
+        if (people_flow_worker_) {
+            people_flow_worker_->setAlgorithmRuntimeProvider({});
+        }
         if (camera_task_manager_) camera_task_manager_->stop();
         if (camera_inference_pool_) camera_inference_pool_->stop();
         if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
@@ -217,6 +223,57 @@ CallbackDeliverySnapshot VisionWorkerHost::callbackSnapshot() const {
     return callback_delivery_worker_
         ? callback_delivery_worker_->snapshot()
         : CallbackDeliverySnapshot{};
+}
+
+AlgorithmRuntimeSnapshot VisionWorkerHost::algorithmRuntimeSnapshot() const {
+    AlgorithmRuntimeSnapshot result;
+    result.generated_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    result.host_running = running_.load();
+    result.active_pipelines = camera_task_manager_
+        ? static_cast<long long>(camera_task_manager_->activePipelineCount()) : 0;
+
+    result.inference_configured =
+        config_.camera_tasks.enabled && config_.analysis.enabled;
+    const auto inference = inferenceSnapshot();
+    result.inference_running = inference.running;
+    result.inference_workers_configured = inference.workers_configured;
+    result.inference_workers_ready = inference.workers_ready;
+    result.inference_active_cameras =
+        static_cast<long long>(inference.active_cameras);
+    result.inference_pending_cameras =
+        static_cast<long long>(inference.pending_cameras);
+    result.inference_submitted_jobs = inference.submitted_jobs;
+    result.inference_replaced_jobs = inference.replaced_jobs;
+    result.inference_processed_jobs = inference.processed_jobs;
+    result.inference_failed_jobs = inference.failed_jobs;
+    result.inference_stale_results = inference.stale_results;
+
+    result.processor_running = camera_algorithm_processor_ != nullptr;
+    if (camera_algorithm_processor_) {
+        const auto processor = camera_algorithm_processor_->snapshot();
+        result.processor_active_sessions =
+            static_cast<long long>(processor.active_sessions);
+        result.processor_processed_frames = processor.processed_frames;
+        result.processor_persisted_alerts = processor.persisted_alerts;
+        result.processor_duplicate_alerts = processor.duplicate_alerts;
+        result.processor_failed_frames = processor.failed_frames;
+    }
+
+    result.callbacks_configured =
+        config_.camera_tasks.enabled && config_.callbacks.enabled;
+    const auto callback = callbackSnapshot();
+    result.callback_running = callback.running;
+    result.callback_profiles_ready = callback.profiles_ready;
+    result.callback_claimed = callback.claimed;
+    result.callback_delivered = callback.delivered;
+    result.callback_retries = callback.retries;
+    result.callback_dead_letters = callback.dead_letters;
+    result.callback_transport_failures = callback.transport_failures;
+    result.callback_lease_conflicts = callback.lease_conflicts;
+    result.callback_last_success_at_ms = callback.last_success_at_ms;
+    result.callback_last_error_code = callback.last_error_code;
+    return result;
 }
 
 }  // namespace yolo11_server

@@ -34,6 +34,9 @@ private:
     crow::response realtime(const std::string& camera_id) const;
     crow::response events(const crow::request& request, const std::string& camera_id) const;
     crow::response adminAsset(const std::string& file_name, const std::string& content_type) const;
+    bool readAlgorithmRuntime(
+        AlgorithmRuntimeSnapshot& runtime,
+        std::string& error) const;
 
     AppConfig config_;
     mutable RedisTaskQueue redis_;

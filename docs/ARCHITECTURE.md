@@ -26,6 +26,7 @@ flowchart LR
     AP -->|"alert + outbox, one transaction"| DB
     DB -->|"SKIP LOCKED claim + fenced lease"| CB["Callback delivery worker"]
     CB -->|"HMAC-signed HTTP POST, at least once"| BE["External backend"]
+    W -->|"Pipeline / inference / processor / callback heartbeat"| R
     PF --> H
     CF --> DB
     DB --> H
@@ -120,6 +121,18 @@ increments an attempt fencing token, and stores a lease deadline in
 attempts enter dead letter. Expired `delivering` leases are reclaimed after a
 worker crash. Redirects are disabled, HTTP is forbidden unless explicitly
 allowed for a test profile, and only a SHA-256 response-body hash is persisted.
+
+The Worker flattens process-local Pipeline, inference-pool, Processor, and
+callback snapshots into its existing Redis heartbeat. The Server treats the
+heartbeat as expiring hot state: `/ready` requires a fresh snapshot and the
+configured components to be running, while `/operations/metrics` merges these
+counters with durable PostgreSQL outbox totals. A missing or stale heartbeat is
+never presented as a zero-valued healthy worker.
+
+Dead-letter inspection stays on the Server/Repository side. Manual replay uses
+the observed attempt as `If-Match`; one atomic PostgreSQL update can move only
+that exact `dead_letter` generation back to `retry`. Callback URLs, secrets,
+request bodies, and response bodies remain outside every operations response.
 
 ## Four stages
 

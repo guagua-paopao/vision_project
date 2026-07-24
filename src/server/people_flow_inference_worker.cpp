@@ -258,6 +258,16 @@ namespace yolo11_server {
         return running_.load();
     }
 
+    void PeopleFlowInferenceWorker::setAlgorithmRuntimeProvider(
+        AlgorithmRuntimeSnapshotProvider provider
+    ) {
+        {
+            std::lock_guard<std::mutex> lock(algorithm_provider_mutex_);
+            algorithm_provider_ = std::move(provider);
+        }
+        if (running_.load()) writeHeartbeatNoexcept();
+    }
+
     bool PeopleFlowInferenceWorker::initModelRunner() {
         runner_ = createModelRunner(config_.model.type);
         std::string error;
@@ -823,6 +833,12 @@ namespace yolo11_server {
                 heartbeat.current_task_id = current_session_id_;
                 heartbeat.last_error = last_error_;
             }
+            AlgorithmRuntimeSnapshotProvider provider;
+            {
+                std::lock_guard<std::mutex> lock(algorithm_provider_mutex_);
+                provider = algorithm_provider_;
+            }
+            if (provider) heartbeat.algorithm_runtime = provider();
             std::string error;
             if (!heartbeat_queue_.writeWorkerHeartbeat(heartbeat, config_.worker.heartbeat_ttl_seconds, error)) {
                 spdlog::warn("People-flow heartbeat failed: {}", error);
