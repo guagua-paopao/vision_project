@@ -125,6 +125,24 @@ namespace yolo11_server {
             }
         }
 
+        bool validServiceIdentifier(const std::string& value, std::size_t maximum = 160) {
+            if (value.empty() || value.size() > maximum) return false;
+            return std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.';
+            });
+        }
+
+        bool validEnvironmentName(const std::string& value) {
+            if (value.empty() || value.size() > 160 ||
+                !(std::isalpha(static_cast<unsigned char>(value.front())) ||
+                  value.front() == '_')) {
+                return false;
+            }
+            return std::all_of(value.begin() + 1, value.end(), [](unsigned char ch) {
+                return std::isalnum(ch) || ch == '_';
+            });
+        }
+
     }  // namespace
 
     AppConfig AppConfig::loadFromYaml(const std::string& yaml_path) {
@@ -439,6 +457,92 @@ namespace yolo11_server {
                 config.analysis.supported_algorithms.begin(),
                 config.analysis.supported_algorithms.end()),
             config.analysis.supported_algorithms.end());
+
+        const auto callbacks = root["callbacks"];
+        config.callbacks.enabled = readOrDefault<bool>(
+            callbacks, "enabled", config.callbacks.enabled);
+        config.callbacks.poll_interval_ms = readOrDefault<int>(
+            callbacks, "poll_interval_ms", config.callbacks.poll_interval_ms);
+        config.callbacks.request_timeout_ms = readOrDefault<int>(
+            callbacks, "request_timeout_ms", config.callbacks.request_timeout_ms);
+        config.callbacks.lease_timeout_ms = readOrDefault<int>(
+            callbacks, "lease_timeout_ms", config.callbacks.lease_timeout_ms);
+        config.callbacks.max_attempts = readOrDefault<int>(
+            callbacks, "max_attempts", config.callbacks.max_attempts);
+        config.callbacks.initial_backoff_ms = readOrDefault<int>(
+            callbacks, "initial_backoff_ms", config.callbacks.initial_backoff_ms);
+        config.callbacks.max_backoff_ms = readOrDefault<int>(
+            callbacks, "max_backoff_ms", config.callbacks.max_backoff_ms);
+        config.callbacks.request_body_limit_bytes = readOrDefault<int>(
+            callbacks, "request_body_limit_bytes",
+            config.callbacks.request_body_limit_bytes);
+        config.callbacks.response_body_limit_bytes = readOrDefault<int>(
+            callbacks, "response_body_limit_bytes",
+            config.callbacks.response_body_limit_bytes);
+        const auto callback_profiles = callbacks["profiles"];
+        if (callback_profiles && callback_profiles.IsMap()) {
+            for (const auto& entry : callback_profiles) {
+                const std::string profile_id = entry.first.as<std::string>();
+                CallbackProfileSection profile;
+                const auto profile_node = entry.second;
+                profile.enabled = readOrDefault<bool>(
+                    profile_node, "enabled", profile.enabled);
+                profile.url_env = readOrDefault<std::string>(
+                    profile_node, "url_env", profile.url_env);
+                profile.hmac_secret_env = readOrDefault<std::string>(
+                    profile_node, "hmac_secret_env", profile.hmac_secret_env);
+                profile.allow_insecure_http = readOrDefault<bool>(
+                    profile_node, "allow_insecure_http", profile.allow_insecure_http);
+                if (!validServiceIdentifier(profile_id) ||
+                    !validEnvironmentName(profile.url_env) ||
+                    !validEnvironmentName(profile.hmac_secret_env)) {
+                    config.callbacks.config_error =
+                        "callbacks profile identifiers and environment references are invalid";
+                    continue;
+                }
+                config.callbacks.profiles[profile_id] = std::move(profile);
+            }
+        }
+        else if (callback_profiles) {
+            config.callbacks.config_error = "callbacks.profiles must be a map";
+        }
+        config.callbacks.poll_interval_ms = std::clamp(
+            config.callbacks.poll_interval_ms, 25, 60000);
+        config.callbacks.request_timeout_ms = std::clamp(
+            config.callbacks.request_timeout_ms, 100, 120000);
+        const int minimum_callback_lease = std::min(
+            600000,
+            config.callbacks.request_timeout_ms * 4 + 1000);
+        config.callbacks.lease_timeout_ms = std::clamp(
+            config.callbacks.lease_timeout_ms,
+            minimum_callback_lease,
+            600000);
+        config.callbacks.max_attempts = std::clamp(
+            config.callbacks.max_attempts, 1, 100);
+        config.callbacks.initial_backoff_ms = std::clamp(
+            config.callbacks.initial_backoff_ms, 100, 3600000);
+        config.callbacks.max_backoff_ms = std::clamp(
+            config.callbacks.max_backoff_ms,
+            config.callbacks.initial_backoff_ms,
+            86400000);
+        config.callbacks.request_body_limit_bytes = std::clamp(
+            config.callbacks.request_body_limit_bytes, 1024, 16777216);
+        config.callbacks.response_body_limit_bytes = std::clamp(
+            config.callbacks.response_body_limit_bytes, 0, 1048576);
+        if (config.callbacks.enabled) {
+            const bool has_enabled_profile = std::any_of(
+                config.callbacks.profiles.begin(),
+                config.callbacks.profiles.end(),
+                [](const auto& entry) { return entry.second.enabled; });
+            if (!config.camera_tasks.enabled) {
+                config.callbacks.config_error =
+                    "callbacks require camera_tasks to be enabled";
+            }
+            else if (!has_enabled_profile) {
+                config.callbacks.config_error =
+                    "callbacks require at least one enabled profile";
+            }
+        }
 
         config.camera_tasks.max_active_runs = std::clamp(config.camera_tasks.max_active_runs, 1, 64);
         config.camera_tasks.writer_threads = std::clamp(config.camera_tasks.writer_threads, 1, 16);

@@ -13,8 +13,8 @@ The selected option-3 architecture remains unchanged:
 - no separate GPU or non-GPU `camera_frame_worker` process;
 - PostgreSQL is the durable store, Redis is command/hot state, and the
   filesystem stores JPEG artifacts;
-- RTSP URI, PostgreSQL DSN, Redis credentials, and admin token are supplied
-  only through environment variables.
+- RTSP URI, callback endpoint/secret, PostgreSQL DSN, Redis credentials, and
+  admin token are supplied only through environment variables.
 
 ## PostgreSQL bootstrap
 
@@ -60,6 +60,40 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start_demo.ps1 -SkipQt
 PostgreSQL DSN. It starts the existing Worker and Server only. Remove `-SkipQt`
 to start the existing People Flow Qt client at the same time.
 
+## Callback delivery
+
+Callback delivery is disabled by default. To enable the built-in
+`backend_primary` profile, set the endpoint and HMAC secret in both Server and
+Worker process environments, then set `callbacks.enabled: true` in both YAML
+files:
+
+```powershell
+$env:YOLO11_CALLBACK_BACKEND_PRIMARY_URL = "https://backend.example/api/algorithm-alerts"
+# Inject YOLO11_CALLBACK_BACKEND_PRIMARY_SECRET with the deployment secret
+# manager; do not place its value in shell history or YAML.
+```
+
+The URL and secret values are resolved only by the Worker. The Server uses the
+profile name as an allow-list so raw callback URLs can never enter Camera JSON.
+Production profiles require HTTPS. `allow_insecure_http` exists only for
+controlled loopback testing and should remain false in deployment.
+
+Key controls:
+
+- `request_timeout_ms`: timeout applied to WinHTTP phases;
+- `lease_timeout_ms`: outbox ownership deadline, normalized to at least four
+  request timeouts plus one second;
+- `max_attempts`, `initial_backoff_ms`, `max_backoff_ms`: bounded exponential
+  retry;
+- `request_body_limit_bytes`: oversize alert payloads enter dead letter without
+  network access;
+- `response_body_limit_bytes`: caps captured response bytes; the SHA-256 hash
+  still covers the complete response stream.
+
+The receiver must verify the HMAC headers described in
+`CAMERA_FRAME_TASK_API.md`, enforce timestamp freshness, and deduplicate by
+`event_id`.
+
 ## Camera lifecycle contract
 
 All routes require `Authorization: Bearer <admin token>`.
@@ -103,6 +137,10 @@ routes.
 | Queue/storage pressure | extraction samples may be dropped and counted; People Flow and Hub stay alive |
 | Worker crash | startup recovery marks stale nonterminal Runs failed before accepting new work |
 | Stale ETag | PATCH/DELETE returns 409 without stopping the live generation |
+| Callback timeout/408/429/5xx | durable outbox enters `retry` with exponential backoff |
+| Callback other 4xx | durable outbox enters `dead_letter` immediately |
+| Callback Worker crash after POST | expired lease is reclaimed; receiver deduplicates repeated `event_id` |
+| Callback response body is large | capture is capped; complete response SHA-256 is stored, raw body is discarded |
 
 ## Legacy SQLite migration
 

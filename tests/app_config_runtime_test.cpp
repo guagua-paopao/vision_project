@@ -38,6 +38,23 @@ int main(int argc, char** argv) {
                     "security", "temporal_action"
                 }),
         "server fixed inference-pool configuration must parse");
+    require(!server.callbacks.enabled &&
+            server.callbacks.poll_interval_ms == 250 &&
+            server.callbacks.request_timeout_ms == 5000 &&
+            server.callbacks.lease_timeout_ms == 30000 &&
+            server.callbacks.max_attempts == 8 &&
+            server.callbacks.initial_backoff_ms == 1000 &&
+            server.callbacks.max_backoff_ms == 300000 &&
+            server.callbacks.request_body_limit_bytes == 1048576 &&
+            server.callbacks.response_body_limit_bytes == 4096 &&
+            server.callbacks.config_error.empty() &&
+            server.callbacks.profiles.count("backend_primary") == 1 &&
+            server.callbacks.profiles.at("backend_primary").url_env ==
+                "YOLO11_CALLBACK_BACKEND_PRIMARY_URL" &&
+            server.callbacks.profiles.at("backend_primary").hmac_secret_env ==
+                "YOLO11_CALLBACK_BACKEND_PRIMARY_SECRET" &&
+            !server.callbacks.profiles.at("backend_primary").allow_insecure_http,
+        "server callback delivery configuration must parse without resolving secrets");
     require(server.people_flow.admin_token_env == server.camera_tasks.admin_token_env &&
             server.people_flow.admin_token_env == "YOLO11_CAMERA_TASK_ADMIN_TOKEN",
         "People Flow control mutations and Camera API must share one bearer-token source");
@@ -64,6 +81,13 @@ int main(int argc, char** argv) {
     require(worker.analysis.enabled && worker.analysis.inference_workers == 2 &&
             worker.analysis.model_init_timeout_ms == 120000,
         "worker fixed inference-pool configuration must parse");
+    require(!worker.callbacks.enabled &&
+            worker.callbacks.profiles.count("backend_primary") == 1 &&
+            worker.callbacks.profiles.at("backend_primary").url_env ==
+                server.callbacks.profiles.at("backend_primary").url_env &&
+            worker.callbacks.profiles.at("backend_primary").hmac_secret_env ==
+                server.callbacks.profiles.at("backend_primary").hmac_secret_env,
+        "worker callback allow-list must match the server without loading secret values");
     require(!worker.camera_tasks.defaults.analysis_enabled &&
             worker.camera_tasks.defaults.target_infer_fps == 5.0 &&
             worker.camera_tasks.defaults.algorithms.empty(),

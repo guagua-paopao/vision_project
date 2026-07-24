@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 
 #include "business/camera_task_repository.h"
+#include "server/callback_delivery_worker.h"
 #include "server/camera_algorithm_processor.h"
 #include "server/camera_inference_pool.h"
 #include "server/model_runner.h"
@@ -44,6 +45,11 @@ bool VisionWorkerHost::start(std::string& error) {
         error = config_.camera_tasks.config_error;
         return false;
     }
+    if (config_.callbacks.enabled &&
+        !config_.callbacks.config_error.empty()) {
+        error = config_.callbacks.config_error;
+        return false;
+    }
 
     hub_registry_ = createSharedCameraFrameHubRegistry(config_);
     if (!hub_registry_) {
@@ -63,13 +69,18 @@ bool VisionWorkerHost::start(std::string& error) {
     }
     std::cerr << "[BOOT] People Flow role started\n";
 
-    if (config_.camera_tasks.enabled && config_.analysis.enabled) {
-        auto algorithm_repository =
+    if (config_.camera_tasks.enabled &&
+        (config_.analysis.enabled || config_.callbacks.enabled)) {
+        camera_repository_ =
             std::make_shared<CameraTaskRepository>(config_.camera_tasks);
+    }
+
+    if (config_.camera_tasks.enabled && config_.analysis.enabled) {
         camera_algorithm_processor_ = std::make_shared<CameraAlgorithmProcessor>(
-            config_, std::move(algorithm_repository));
+            config_, camera_repository_);
         if (!camera_algorithm_processor_->start(error)) {
             camera_algorithm_processor_.reset();
+            camera_repository_.reset();
             people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
@@ -86,6 +97,7 @@ bool VisionWorkerHost::start(std::string& error) {
             camera_inference_pool_.reset();
             camera_algorithm_processor_->stop();
             camera_algorithm_processor_.reset();
+            camera_repository_.reset();
             people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
@@ -96,6 +108,25 @@ bool VisionWorkerHost::start(std::string& error) {
                   << config_.analysis.inference_workers << " workers\n";
     }
 
+    if (config_.camera_tasks.enabled && config_.callbacks.enabled) {
+        callback_delivery_worker_ = std::make_unique<CallbackDeliveryWorker>(
+            config_, camera_repository_);
+        if (!callback_delivery_worker_->start(error)) {
+            callback_delivery_worker_.reset();
+            if (camera_inference_pool_) camera_inference_pool_->stop();
+            camera_inference_pool_.reset();
+            if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
+            camera_algorithm_processor_.reset();
+            camera_repository_.reset();
+            people_flow_worker_->stop();
+            people_flow_worker_.reset();
+            hub_registry_->stopAll();
+            hub_registry_.reset();
+            return false;
+        }
+        std::cerr << "[BOOT] durable callback delivery worker started\n";
+    }
+
     if (config_.camera_tasks.enabled) {
         if (!camera_manager_factory_) {
             error = "camera task runtime factory is unavailable";
@@ -103,6 +134,9 @@ bool VisionWorkerHost::start(std::string& error) {
             camera_inference_pool_.reset();
             if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
             camera_algorithm_processor_.reset();
+            if (callback_delivery_worker_) callback_delivery_worker_->stop();
+            callback_delivery_worker_.reset();
+            camera_repository_.reset();
             people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
@@ -119,6 +153,9 @@ bool VisionWorkerHost::start(std::string& error) {
             camera_inference_pool_.reset();
             if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
             camera_algorithm_processor_.reset();
+            if (callback_delivery_worker_) callback_delivery_worker_->stop();
+            callback_delivery_worker_.reset();
+            camera_repository_.reset();
             people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
@@ -134,17 +171,21 @@ bool VisionWorkerHost::start(std::string& error) {
 
 void VisionWorkerHost::stop() noexcept {
     if (!running_.exchange(false) && !people_flow_worker_ && !camera_task_manager_ &&
-        !camera_inference_pool_ && !camera_algorithm_processor_ && !hub_registry_) {
+        !camera_inference_pool_ && !camera_algorithm_processor_ &&
+        !callback_delivery_worker_ && !hub_registry_) {
         return;
     }
     try {
         if (camera_task_manager_) camera_task_manager_->stop();
         if (camera_inference_pool_) camera_inference_pool_->stop();
         if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
+        if (callback_delivery_worker_) callback_delivery_worker_->stop();
         if (people_flow_worker_) people_flow_worker_->stop();
         camera_task_manager_.reset();
         camera_inference_pool_.reset();
         camera_algorithm_processor_.reset();
+        callback_delivery_worker_.reset();
+        camera_repository_.reset();
         people_flow_worker_.reset();
         if (hub_registry_) hub_registry_->stopAll();
         hub_registry_.reset();
@@ -170,6 +211,12 @@ CameraInferencePoolSnapshot VisionWorkerHost::inferenceSnapshot() const {
     return camera_inference_pool_
         ? camera_inference_pool_->snapshot()
         : CameraInferencePoolSnapshot{};
+}
+
+CallbackDeliverySnapshot VisionWorkerHost::callbackSnapshot() const {
+    return callback_delivery_worker_
+        ? callback_delivery_worker_->snapshot()
+        : CallbackDeliverySnapshot{};
 }
 
 }  // namespace yolo11_server

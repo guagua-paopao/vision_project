@@ -147,6 +147,15 @@ target_link_libraries(camera_algorithm_runtime PUBLIC
     camera_inference_pool camera_task_storage people_flow_vision security_analytics_core
     nlohmann_json::nlohmann_json OpenSSL::Crypto ${OpenCV_LIBS} Threads::Threads)
 
+add_library(callback_delivery_runtime STATIC src/server/callback_delivery_worker.cpp)
+target_include_directories(callback_delivery_runtime PUBLIC "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(callback_delivery_runtime PUBLIC
+    app_support camera_task_storage nlohmann_json::nlohmann_json
+    OpenSSL::Crypto spdlog::spdlog Threads::Threads)
+if(WIN32)
+    target_link_libraries(callback_delivery_runtime PUBLIC winhttp)
+endif()
+
 add_library(camera_task_redis STATIC src/server/camera_task_queue.cpp)
 target_include_directories(camera_task_redis PUBLIC "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(camera_task_redis PUBLIC camera_task_scheduling hiredis::hiredis nlohmann_json::nlohmann_json)
@@ -198,7 +207,7 @@ target_include_directories(four_stage_worker PRIVATE
     "${PROJECT_INCLUDE_DIR}" "${PROJECT_PLUGIN_DIR}" ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(four_stage_worker PRIVATE
     app_support camera_capture_runtime camera_task_runtime camera_task_scheduling
-    camera_inference_pool camera_algorithm_runtime
+    camera_inference_pool camera_algorithm_runtime callback_delivery_runtime
     people_flow_redis people_flow_storage security_analytics_core pose_runtime myplugins
     nlohmann_json::nlohmann_json spdlog::spdlog ${OpenCV_LIBS})
 add_dependencies(four_stage_worker myplugins)
@@ -257,6 +266,21 @@ target_link_libraries(camera_algorithm_processor_test PRIVATE
     camera_algorithm_runtime camera_task_storage ${OpenCV_LIBS})
 add_test(NAME camera_algorithm_processor_test COMMAND camera_algorithm_processor_test)
 set_tests_properties(camera_algorithm_processor_test PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(callback_delivery_worker_test tests/callback_delivery_worker_test.cpp)
+target_include_directories(callback_delivery_worker_test PRIVATE "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(callback_delivery_worker_test PRIVATE
+    callback_delivery_runtime camera_task_storage OpenSSL::Crypto)
+add_test(NAME callback_delivery_worker_test COMMAND callback_delivery_worker_test)
+set_tests_properties(callback_delivery_worker_test PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(callback_http_transport_test tests/callback_http_transport_test.cpp)
+target_include_directories(callback_http_transport_test PRIVATE "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(callback_http_transport_test PRIVATE callback_delivery_runtime)
+if(WIN32)
+    target_link_libraries(callback_http_transport_test PRIVATE ws2_32)
+endif()
+add_test(NAME callback_http_transport_test COMMAND callback_http_transport_test)
 
 add_executable(camera_task_repository_test tests/camera_task_repository_test.cpp)
 target_include_directories(camera_task_repository_test PRIVATE "${PROJECT_INCLUDE_DIR}")

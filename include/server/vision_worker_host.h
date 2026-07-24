@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "server/app_config.h"
+#include "server/callback_delivery_worker.h"
 #include "server/camera_inference_pool.h"
 #include "server/camera_task_manager.h"
 #include "server/shared_camera_frame_hub.h"
@@ -14,8 +15,10 @@
 namespace yolo11_server {
 
 class PeopleFlowInferenceWorker;
+class CameraTaskRepository;
 class CameraAlgorithmProcessor;
 class CameraInferencePool;
+class CallbackDeliveryWorker;
 class ICameraFrameJobSink;
 
 using CameraTaskManagerFactory = std::function<std::unique_ptr<CameraTaskManager>(
@@ -44,6 +47,7 @@ public:
     std::vector<CameraHubStatus> hubSnapshots() const;
     std::vector<std::string> activeCameraRunIds() const;
     CameraInferencePoolSnapshot inferenceSnapshot() const;
+    CallbackDeliverySnapshot callbackSnapshot() const;
 
 private:
     int worker_id_ = 0;
@@ -52,8 +56,10 @@ private:
     CameraTaskManagerFactory camera_manager_factory_;
     std::shared_ptr<SharedCameraFrameHubRegistry> hub_registry_;
     std::unique_ptr<PeopleFlowInferenceWorker> people_flow_worker_;
+    std::shared_ptr<CameraTaskRepository> camera_repository_;
     std::shared_ptr<CameraAlgorithmProcessor> camera_algorithm_processor_;
     std::shared_ptr<CameraInferencePool> camera_inference_pool_;
+    std::unique_ptr<CallbackDeliveryWorker> callback_delivery_worker_;
     std::unique_ptr<CameraTaskManager> camera_task_manager_;
     std::atomic<bool> running_{ false };
 };

@@ -1165,6 +1165,158 @@ bool CameraTaskRepository::listAlerts(
     return false;
 }
 
+bool CameraTaskRepository::claimDueCallback(
+    long long now_ms,
+    int lease_timeout_ms,
+    CallbackOutboxRecord& outbox,
+    bool& found,
+    std::string& error
+) const {
+    found = false;
+    outbox = {};
+    error.clear();
+    if (now_ms <= 0 || lease_timeout_ms < 1000 || lease_timeout_ms > 600000) {
+        error = "callback claim bounds are invalid";
+        return false;
+    }
+    DbPtr db;
+    if (!openDatabase(config_, db, error)) return false;
+    StatementPtr statement;
+    if (!prepare(db.get(),
+        "WITH candidate AS ("
+        " SELECT outbox_id FROM callback_outbox"
+        " WHERE ((status IN ('pending','retry') AND next_attempt_at_ms<=?)"
+        "    OR (status='delivering' AND next_attempt_at_ms<=?))"
+        " ORDER BY next_attempt_at_ms ASC,outbox_id ASC"
+        " FOR UPDATE SKIP LOCKED LIMIT 1"
+        ")"
+        " UPDATE callback_outbox o"
+        " SET status='delivering',attempt=o.attempt+1,last_attempt_at_ms=?,"
+        "     next_attempt_at_ms=?,updated_at_ms=?"
+        " FROM candidate c WHERE o.outbox_id=c.outbox_id"
+        " RETURNING o.outbox_id,o.event_id,o.callback_profile,o.status,o.attempt,"
+        "           o.next_attempt_at_ms,o.last_attempt_at_ms,o.created_at_ms,o.updated_at_ms;",
+        statement,
+        error)) {
+        return false;
+    }
+    sqlite3_bind_int64(statement.get(), 1, now_ms);
+    sqlite3_bind_int64(statement.get(), 2, now_ms);
+    sqlite3_bind_int64(statement.get(), 3, now_ms);
+    sqlite3_bind_int64(statement.get(), 4, now_ms + lease_timeout_ms);
+    sqlite3_bind_int64(statement.get(), 5, now_ms);
+    const int result = sqlite3_step(statement.get());
+    if (result == SQLITE_DONE) return true;
+    if (result != SQLITE_ROW) {
+        error = sqlite3_errmsg(db.get());
+        return false;
+    }
+    outbox.outbox_id = sqlite3_column_int64(statement.get(), 0);
+    outbox.event_id = columnText(statement.get(), 1);
+    outbox.callback_profile = columnText(statement.get(), 2);
+    outbox.status = columnText(statement.get(), 3);
+    outbox.attempt = sqlite3_column_int(statement.get(), 4);
+    outbox.next_attempt_at_ms = sqlite3_column_int64(statement.get(), 5);
+    outbox.last_attempt_at_ms = sqlite3_column_int64(statement.get(), 6);
+    outbox.created_at_ms = sqlite3_column_int64(statement.get(), 7);
+    outbox.updated_at_ms = sqlite3_column_int64(statement.get(), 8);
+    found = true;
+    return true;
+}
+
+bool CameraTaskRepository::markCallbackDelivered(
+    long long outbox_id,
+    int attempt,
+    long long delivered_at_ms,
+    int http_status,
+    const std::string& response_body_hash,
+    std::string& error
+) const {
+    error.clear();
+    if (outbox_id <= 0 || attempt <= 0 || delivered_at_ms <= 0 ||
+        http_status < 200 || http_status > 299 ||
+        (!response_body_hash.empty() && response_body_hash.size() != 64)) {
+        error = "callback delivery completion bounds are invalid";
+        return false;
+    }
+    DbPtr db;
+    if (!openDatabase(config_, db, error)) return false;
+    StatementPtr statement;
+    if (!prepare(db.get(),
+        "UPDATE callback_outbox SET status='delivered',delivered_at_ms=?,"
+        "last_http_status=?,last_error_code=NULL,response_body_hash=?,updated_at_ms=?"
+        " WHERE outbox_id=? AND status='delivering' AND attempt=?;",
+        statement,
+        error)) {
+        return false;
+    }
+    sqlite3_bind_int64(statement.get(), 1, delivered_at_ms);
+    sqlite3_bind_int(statement.get(), 2, http_status);
+    if (response_body_hash.empty()) sqlite3_bind_null(statement.get(), 3);
+    else bindText(statement.get(), 3, response_body_hash);
+    sqlite3_bind_int64(statement.get(), 4, delivered_at_ms);
+    sqlite3_bind_int64(statement.get(), 5, outbox_id);
+    sqlite3_bind_int(statement.get(), 6, attempt);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db.get());
+        return false;
+    }
+    if (sqlite3_changes(db.get()) == 1) return true;
+    error = "callback delivery lease was lost";
+    return false;
+}
+
+bool CameraTaskRepository::finishCallbackAttempt(
+    long long outbox_id,
+    int attempt,
+    const std::string& next_status,
+    long long next_attempt_at_ms,
+    long long update_time_ms,
+    int http_status,
+    const std::string& error_code,
+    const std::string& response_body_hash,
+    std::string& error
+) const {
+    error.clear();
+    if (outbox_id <= 0 || attempt <= 0 ||
+        (next_status != "retry" && next_status != "dead_letter") ||
+        next_attempt_at_ms < update_time_ms || update_time_ms <= 0 ||
+        http_status < 0 || http_status > 599 ||
+        !validServiceIdentifier(error_code, 160) ||
+        (!response_body_hash.empty() && response_body_hash.size() != 64)) {
+        error = "callback attempt completion bounds are invalid";
+        return false;
+    }
+    DbPtr db;
+    if (!openDatabase(config_, db, error)) return false;
+    StatementPtr statement;
+    if (!prepare(db.get(),
+        "UPDATE callback_outbox SET status=?,next_attempt_at_ms=?,"
+        "last_http_status=?,last_error_code=?,response_body_hash=?,updated_at_ms=?"
+        " WHERE outbox_id=? AND status='delivering' AND attempt=?;",
+        statement,
+        error)) {
+        return false;
+    }
+    bindText(statement.get(), 1, next_status);
+    sqlite3_bind_int64(statement.get(), 2, next_attempt_at_ms);
+    if (http_status == 0) sqlite3_bind_null(statement.get(), 3);
+    else sqlite3_bind_int(statement.get(), 3, http_status);
+    bindText(statement.get(), 4, error_code);
+    if (response_body_hash.empty()) sqlite3_bind_null(statement.get(), 5);
+    else bindText(statement.get(), 5, response_body_hash);
+    sqlite3_bind_int64(statement.get(), 6, update_time_ms);
+    sqlite3_bind_int64(statement.get(), 7, outbox_id);
+    sqlite3_bind_int(statement.get(), 8, attempt);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db.get());
+        return false;
+    }
+    if (sqlite3_changes(db.get()) == 1) return true;
+    error = "callback delivery lease was lost";
+    return false;
+}
+
 bool CameraTaskRepository::getIdempotencyRecord(
     const std::string& operation_scope,
     const std::string& idempotency_key,

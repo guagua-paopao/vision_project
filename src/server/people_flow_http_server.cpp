@@ -205,7 +205,8 @@ crow::response PeopleFlowHttpServer::health() const {
     const auto camera = camera_task_controller_
         ? camera_task_controller_->health() : CameraTaskHttpHealth{};
     const bool camera_ok = !camera.enabled ||
-        (camera.initialized && camera.storage_ok && camera.output_root_writable && camera.worker_num_valid);
+        (camera.initialized && camera.storage_ok && camera.output_root_writable &&
+            camera.worker_num_valid && camera.callback_config_valid);
     const bool healthy = redis_ok && camera_ok;
     return jsonResponse(healthy ? 200 : 503, {
         {"success", healthy}, {"service", "four-stage-people-flow"},
@@ -219,7 +220,8 @@ crow::response PeopleFlowHttpServer::health() const {
             {"storage_ok", camera.storage_ok},
             {"output_root_writable", camera.output_root_writable},
             {"token_configured", camera.token_configured},
-            {"worker_num_valid", camera.worker_num_valid}
+            {"worker_num_valid", camera.worker_num_valid},
+            {"callback_config_valid", camera.callback_config_valid}
         }}
     });
 }
@@ -255,7 +257,8 @@ crow::response PeopleFlowHttpServer::ready() const {
     }
     const bool camera_ready = !camera.enabled ||
         (camera.initialized && camera.token_configured && camera.storage_ok &&
-            camera.output_root_writable && camera.worker_num_valid && camera_role_alive);
+            camera.output_root_writable && camera.worker_num_valid &&
+            camera.callback_config_valid && camera_role_alive);
     const bool is_ready = redis_ok && workers_ok && alive >= config_.worker.min_alive_workers && camera_ready;
     return jsonResponse(is_ready ? 200 : 503, {
         {"success", is_ready}, {"ready", is_ready}, {"redis_ok", redis_ok},

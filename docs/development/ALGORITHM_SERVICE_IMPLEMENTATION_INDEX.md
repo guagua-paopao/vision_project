@@ -25,7 +25,7 @@ are recorded here.
 | P1 | Data model and HTTP control plane | Complete | [P1 control plane](ALGORITHM_SERVICE_P1_CONTROL_PLANE.md) |
 | P2 | Per-camera `CameraPipeline` lifecycle | Complete | [P2 CameraPipeline](ALGORITHM_SERVICE_P2_CAMERA_PIPELINE.md) |
 | P3 | Fixed inference worker pool | Complete | [P3 inference pool](ALGORITHM_SERVICE_P3_INFERENCE_POOL.md) |
-| P4 | Durable alert callback | Planned | `ALGORITHM_SERVICE_P4_ALERT_CALLBACK.md` |
+| P4 | Durable alert callback | Complete | [P4 alert callback](ALGORITHM_SERVICE_P4_ALERT_CALLBACK.md) |
 | P5 | Integration, observability, and Postman | Planned | `ALGORITHM_SERVICE_P5_INTEGRATION.md` |
 | P6 | Hardware acceptance and release | Planned | `ALGORITHM_SERVICE_P6_RELEASE.md` |
 
@@ -41,13 +41,20 @@ are recorded here.
   0 skipped, 8.48 seconds.
 - P3 exit CTest on disposable PostgreSQL 17: 14 tests, 14 passed, 0 failed,
   0 skipped, 8.33 seconds.
+- P4 exit CTest on disposable PostgreSQL 17: 16 tests, 16 passed, 0 failed,
+  0 skipped, 9.38 seconds.
 - P3 runtime invariant: one Pipeline thread per active camera, plus a
   startup-fixed pool of `analysis.inference_workers` model runners.
+- P4 runtime invariant: alert persistence and HTTP delivery are decoupled by a
+  PostgreSQL outbox with leased, fenced claims and bounded retry/dead-letter
+  behavior.
 - Historical P0-P2 integration: commit `1775b32`, merged pull request #1.
 - P2 acceptance patch: branch `agent/p2-camera-pipeline`, commit `dbd4ab2`,
   draft pull request #3.
 - P3 implementation: branch `agent/p3-fixed-inference-pool`, commit
   `ab780ab`, draft pull request #2 stacked on the P2 branch.
+- P4 implementation: branch `agent/p4-durable-callback`, commit `f773296`,
+  draft pull request #4 stacked on the P3 branch.
 
 ## Completion definition
 

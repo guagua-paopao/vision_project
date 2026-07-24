@@ -196,6 +196,29 @@ namespace yolo11_server {
         };
     };
 
+    struct CallbackProfileSection {
+        bool enabled = true;
+        // Endpoint and HMAC secret values are resolved only inside the Worker.
+        // YAML stores environment-variable names, never the values themselves.
+        std::string url_env;
+        std::string hmac_secret_env;
+        bool allow_insecure_http = false;
+    };
+
+    struct CallbackDeliverySection {
+        bool enabled = false;
+        int poll_interval_ms = 250;
+        int request_timeout_ms = 5000;
+        int lease_timeout_ms = 30000;
+        int max_attempts = 8;
+        int initial_backoff_ms = 1000;
+        int max_backoff_ms = 300000;
+        int request_body_limit_bytes = 1048576;
+        int response_body_limit_bytes = 4096;
+        std::map<std::string, CallbackProfileSection> profiles;
+        std::string config_error;
+    };
+
     struct NormalizedPoint {
         double x = 0.0;
         double y = 0.0;
@@ -463,6 +486,7 @@ namespace yolo11_server {
         CameraHubSection camera_hub;
         CameraTasksSection camera_tasks;
         AnalysisSection analysis;
+        CallbackDeliverySection callbacks;
         PeopleFlowSection people_flow;
         RedisSection redis;
         LoggingSection logging;

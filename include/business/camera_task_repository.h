@@ -150,6 +150,32 @@ public:
         std::vector<SecurityAlertEventRecord>& alerts,
         std::string& error
     ) const;
+    bool claimDueCallback(
+        long long now_ms,
+        int lease_timeout_ms,
+        CallbackOutboxRecord& outbox,
+        bool& found,
+        std::string& error
+    ) const;
+    bool markCallbackDelivered(
+        long long outbox_id,
+        int attempt,
+        long long delivered_at_ms,
+        int http_status,
+        const std::string& response_body_hash,
+        std::string& error
+    ) const;
+    bool finishCallbackAttempt(
+        long long outbox_id,
+        int attempt,
+        const std::string& next_status,
+        long long next_attempt_at_ms,
+        long long update_time_ms,
+        int http_status,
+        const std::string& error_code,
+        const std::string& response_body_hash,
+        std::string& error
+    ) const;
 
     bool getIdempotencyRecord(
         const std::string& operation_scope,
