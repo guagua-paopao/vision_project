@@ -14,3 +14,5 @@ jobs:
           python-version: "3.12"
       - name: Validate Qt and API workflow
         run: python tools/qt_demo_contract_test.py
+      - name: Validate Web Admin parity and security
+        run: python tests/web_admin_contract_test.py

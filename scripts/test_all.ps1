@@ -12,4 +12,6 @@ $CTestExe = Join-Path $VisualStudioRoot "Common7\IDE\CommonExtensions\Microsoft\
 if ($LASTEXITCODE -ne 0) { throw "C++ tests failed" }
 python (Join-Path $ProjectRoot "tools\qt_demo_contract_test.py")
 if ($LASTEXITCODE -ne 0) { throw "Qt API contract test failed" }
+python (Join-Path $ProjectRoot "tests\web_admin_contract_test.py")
+if ($LASTEXITCODE -ne 0) { throw "Web Admin contract test failed" }
 Write-Host "PASS: all compact-project tests succeeded." -ForegroundColor Green

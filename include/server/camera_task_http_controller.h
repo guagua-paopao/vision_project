@@ -70,6 +70,10 @@ public:
         const crow::request& request,
         const std::string& task_id
     ) const;
+    crow::response analysisSnapshot(
+        const crow::request& request,
+        const std::string& task_id
+    ) const;
     crow::response listRuns(
         const crow::request& request,
         const std::string& task_id
