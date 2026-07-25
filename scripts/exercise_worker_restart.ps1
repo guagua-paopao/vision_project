@@ -193,7 +193,16 @@ try {
             $status = Read-Json (
                 Invoke-Api -Method GET `
                     -Path "/cameras/$cameraId/status")
-            if ($ready.ready -and
+            $runtimeFenceReady =
+                $ready.worker_mode_consistent -and
+                $ready.single_vision_worker -and
+                $ready.worker_coordination_healthy -and
+                $ready.camera_task_manager_running -and
+                $ready.hub_registry_ready -and
+                ($ready.expected_runtime_mode -ne
+                    "unified_camera_pipeline" -or
+                    -not $ready.legacy_people_flow_worker_detected)
+            if ($ready.ready -and $runtimeFenceReady -and
                 $ready.algorithm_runtime_generated_at_ms -gt $killedAtMs -and
                 $status.status -eq "running" -and
                 $status.pipeline.thread_running -and
@@ -234,6 +243,11 @@ try {
         old_run_status = $oldRun.status
         old_run_error_code = $oldRun.error_code
         recovered_at_ms = $ready.algorithm_runtime_generated_at_ms
+        runtime_mode = $ready.expected_runtime_mode
+        worker_generation = @($ready.workers |
+            Where-Object { $_.alive } |
+            Select-Object -First 1).worker_generation
+        coordination_healthy = $ready.worker_coordination_healthy
     } | ConvertTo-Json -Depth 6 |
         Set-Content -LiteralPath (
             Join-Path $EvidenceDir "summary.json") -Encoding UTF8

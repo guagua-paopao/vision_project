@@ -2625,6 +2625,12 @@ namespace yolo11_server {
             "worker_kind %b "
             "task_kind %b "
             "stream_type %b "
+            "runtime_mode %b "
+            "worker_generation %b "
+            "legacy_people_flow_role %d "
+            "camera_task_manager_running %d "
+            "hub_registry_ready %d "
+            "coordination_healthy %d "
             "engine_path %b "
             "labels_path %b "
             "max_concurrency %d "
@@ -2678,6 +2684,13 @@ namespace yolo11_server {
             heartbeat.worker_kind.c_str(), heartbeat.worker_kind.size(),
             heartbeat.task_kind.c_str(), heartbeat.task_kind.size(),
             heartbeat.stream_type.c_str(), heartbeat.stream_type.size(),
+            heartbeat.runtime_mode.c_str(), heartbeat.runtime_mode.size(),
+            heartbeat.worker_generation.c_str(),
+            heartbeat.worker_generation.size(),
+            heartbeat.legacy_people_flow_role ? 1 : 0,
+            heartbeat.camera_task_manager_running ? 1 : 0,
+            heartbeat.hub_registry_ready ? 1 : 0,
+            heartbeat.coordination_healthy ? 1 : 0,
             heartbeat.engine_path.c_str(), heartbeat.engine_path.size(),
             heartbeat.labels_path.c_str(), heartbeat.labels_path.size(),
             heartbeat.max_concurrency,
@@ -2782,6 +2795,34 @@ namespace yolo11_server {
                 record.worker_kind = getValue("worker_kind");
                 record.task_kind = getValue("task_kind");
                 record.stream_type = getValue("stream_type");
+                record.runtime_mode = getValue("runtime_mode");
+                record.worker_generation = getValue("worker_generation");
+                const std::string legacy_role =
+                    getValue("legacy_people_flow_role");
+                record.legacy_people_flow_role = legacy_role.empty()
+                    ? record.task_kind.find("live_people_flow") !=
+                        std::string::npos
+                    : parseLongLong(legacy_role) != 0;
+                const std::string manager_running =
+                    getValue("camera_task_manager_running");
+                record.camera_task_manager_running = manager_running.empty()
+                    ? record.task_kind.find("camera_frame") !=
+                        std::string::npos
+                    : parseLongLong(manager_running) != 0;
+                const std::string hub_ready = getValue("hub_registry_ready");
+                record.hub_registry_ready = hub_ready.empty()
+                    ? record.worker_kind == "vision_host"
+                    : parseLongLong(hub_ready) != 0;
+                const std::string coordination =
+                    getValue("coordination_healthy");
+                record.coordination_healthy = coordination.empty()
+                    ? record.worker_kind == "vision_host"
+                    : parseLongLong(coordination) != 0;
+                if (record.runtime_mode.empty() &&
+                    record.worker_kind == "vision_host") {
+                    record.runtime_mode = record.legacy_people_flow_role
+                        ? "legacy_split" : "unknown";
+                }
                 record.engine_path = getValue("engine_path");
                 record.labels_path = getValue("labels_path");
                 record.max_concurrency = static_cast<int>(parseLongLong(getValue("max_concurrency")));

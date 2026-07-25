@@ -153,6 +153,12 @@ namespace yolo11_server {
         std::string worker_kind;
         std::string task_kind;
         std::string stream_type;
+        std::string runtime_mode;
+        std::string worker_generation;
+        bool legacy_people_flow_role = false;
+        bool camera_task_manager_running = false;
+        bool hub_registry_ready = false;
+        bool coordination_healthy = false;
         std::string engine_path;
         std::string labels_path;
         int max_concurrency = 1;

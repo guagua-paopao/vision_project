@@ -224,7 +224,8 @@ void CameraPipeline::runImpl() {
     if (run.status == "queued" && !transition(run, { "queued" }, "starting")) return;
     std::shared_ptr<FrameSubscription> subscription;
     if (!hub_registry_->subscribe(command_.camera_profile,
-        { "camera_task_" + command_.run_id, "camera_task" }, subscription, error)) {
+        { "camera_pipeline_" + command_.run_id, "camera_pipeline" },
+        subscription, error)) {
         const std::string code = error == "CAMERA_HUB_CAPACITY_EXCEEDED"
             ? error : "CAMERA_HUB_SUBSCRIBE_FAILED";
         transition(run, { "starting", "running", "reconnecting" }, "failed", code, error);

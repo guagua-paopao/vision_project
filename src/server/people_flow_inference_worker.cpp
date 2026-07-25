@@ -819,6 +819,15 @@ namespace yolo11_server {
                 ? "live_people_flow,camera_frame"
                 : "live_people_flow";
             heartbeat.stream_type = "long_running_stream";
+            heartbeat.runtime_mode = "legacy_split";
+            heartbeat.worker_generation =
+                heartbeat.pid + ":" + std::to_string(process_start_time_ms_);
+            heartbeat.legacy_people_flow_role = true;
+            heartbeat.camera_task_manager_running =
+                config_.camera_tasks.enabled &&
+                heartbeat.algorithm_runtime.host_running;
+            heartbeat.hub_registry_ready = hub_registry_ != nullptr;
+            heartbeat.coordination_healthy = true;
             heartbeat.engine_path = config_.model.engine_path;
             heartbeat.labels_path = config_.model.labels_path;
             heartbeat.max_concurrency = 1 +
@@ -839,6 +848,9 @@ namespace yolo11_server {
                 provider = algorithm_provider_;
             }
             if (provider) heartbeat.algorithm_runtime = provider();
+            heartbeat.camera_task_manager_running =
+                config_.camera_tasks.enabled &&
+                heartbeat.algorithm_runtime.host_running;
             std::string error;
             if (!heartbeat_queue_.writeWorkerHeartbeat(heartbeat, config_.worker.heartbeat_ttl_seconds, error)) {
                 spdlog::warn("People-flow heartbeat failed: {}", error);

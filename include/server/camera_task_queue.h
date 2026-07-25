@@ -66,6 +66,18 @@ public:
         CameraHubHotStatus& status,
         std::string& error) override;
     bool updateHubStatus(const CameraHubStatus& status, std::string& error) override;
+    bool acquireVisionWorkerLease(
+        const std::string& runtime_mode,
+        int ttl_seconds,
+        std::string& error);
+    bool refreshVisionWorkerLease(
+        const std::string& runtime_mode,
+        int ttl_seconds,
+        std::string& error);
+    bool releaseVisionWorkerLease(
+        const std::string& runtime_mode,
+        std::string& error);
+    std::string visionWorkerLeaseKey() const;
 
 private:
     bool connectLocked(std::string& error);
@@ -79,6 +91,7 @@ private:
     std::string statusKey(const std::string& run_id) const;
     std::string hubStatusKey(const std::string& camera_profile) const;
     std::string leaseValue(const std::string& run_id) const;
+    std::string workerLeaseValue(const std::string& runtime_mode) const;
 
     RedisSection redis_config_;
     CameraTasksSection camera_config_;
