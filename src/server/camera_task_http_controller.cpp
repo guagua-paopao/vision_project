@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -78,6 +79,9 @@ std::string publicError(const std::string& code) {
     if (code == "PRECONDITION_REQUIRED") return "If-Match is required";
     if (code == "LATEST_OUTPUT_DISABLED") return "latest output is disabled for this camera";
     if (code == "FRAME_NOT_READY") return "latest frame is not ready";
+    if (code == "ANALYSIS_SNAPSHOT_NOT_READY") {
+        return "annotated analysis snapshot is not ready";
+    }
     if (code == "QUEUE_SUBMIT_FAILED") return "camera extraction command queue is unavailable";
     if (code == "STORAGE_PRESSURE") return "camera archive storage is under critical pressure";
     if (code == "RUN_NOT_FOUND") return "camera has no extraction run history";
@@ -523,6 +527,45 @@ bool isReparsePoint(const std::filesystem::path& path) {
 #endif
 }
 
+bool pathWithin(
+    const std::filesystem::path& root,
+    const std::filesystem::path& candidate
+) {
+    auto root_it = root.begin();
+    auto candidate_it = candidate.begin();
+    for (; root_it != root.end(); ++root_it, ++candidate_it) {
+        if (candidate_it == candidate.end() ||
+            *root_it != *candidate_it) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool resolveCameraArtifact(
+    const std::string& root_value,
+    const std::string& relative_value,
+    std::filesystem::path& resolved
+) {
+    if (relative_value.empty()) return false;
+    const auto relative = std::filesystem::u8path(relative_value);
+    if (relative.is_absolute()) return false;
+    std::error_code error;
+    const auto root = std::filesystem::weakly_canonical(
+        std::filesystem::absolute(
+            std::filesystem::u8path(root_value), error),
+        error);
+    if (error || isReparsePoint(root)) return false;
+    resolved = std::filesystem::weakly_canonical(
+        root / relative, error);
+    if (error || !pathWithin(root, resolved)) return false;
+    for (auto current = resolved; current != root;
+         current = current.parent_path()) {
+        if (isReparsePoint(current)) return false;
+    }
+    return !isReparsePoint(resolved);
+}
+
 }  // namespace
 
 CameraTaskHttpController::CameraTaskHttpController(
@@ -602,6 +645,10 @@ void CameraTaskHttpController::registerRoutes(crow::SimpleApp& app) {
         [this](const crow::request& request, const std::string& id) { return taskStatus(request, id); });
     CROW_ROUTE(app, "/api/v1/cameras/<string>/latest-frame")(
         [this](const crow::request& request, const std::string& id) { return latestFrame(request, id); });
+    CROW_ROUTE(app, "/api/v1/cameras/<string>/analysis-snapshot")(
+        [this](const crow::request& request, const std::string& id) {
+            return analysisSnapshot(request, id);
+        });
     CROW_ROUTE(app, "/api/v1/cameras/<string>/runs")(
         [this](const crow::request& request, const std::string& id) { return listRuns(request, id); });
     CROW_ROUTE(app, "/api/v1/cameras/<string>/alerts")(
@@ -867,6 +914,8 @@ crow::response CameraTaskHttpController::getTask(
             {"status", "/api/v1/cameras/" + task_id + "/status"},
             {"runs", "/api/v1/cameras/" + task_id + "/runs"},
             {"latest_frame", "/api/v1/cameras/" + task_id + "/latest-frame"},
+            {"analysis_snapshot", "/api/v1/cameras/" + task_id +
+                "/analysis-snapshot"},
             {"alerts", "/api/v1/cameras/" + task_id + "/alerts"}
         }}
     };
@@ -1137,6 +1186,9 @@ crow::response CameraTaskHttpController::startTask(
             "/api/v1/cameras/" + task_id + "/status";
         response_body["latest_frame_url"] =
             "/api/v1/cameras/" + task_id + "/latest-frame";
+        response_body["analysis_snapshot_url"] =
+            "/api/v1/cameras/" + task_id +
+            "/analysis-snapshot";
     }
     auto response = jsonResponse(
         result.idempotent_replay ? 200 : 202, std::move(response_body));
@@ -1221,7 +1273,9 @@ crow::response CameraTaskHttpController::taskStatus(
                 {"runtime_stale", true},
                 {"analysis", {
                     {"enabled", task.analysis_enabled}, {"target_infer_fps", task.target_infer_fps},
-                    {"algorithm_profile", task.algorithm_profile}, {"algorithms", task.algorithms}
+                    {"algorithm_profile", task.algorithm_profile}, {"algorithms", task.algorithms},
+                    {"snapshot_url", "/api/v1/cameras/" + task_id +
+                        "/analysis-snapshot"}
                 }},
                 {"pipeline", {
                     {"thread_running", false}, {"thread_started_at_ms", 0},
@@ -1301,6 +1355,8 @@ crow::response CameraTaskHttpController::taskStatus(
             {"warmup_frames_remaining", hot_ok ? hot.warmup_frames_remaining : 0},
             {"snapshot_relative_path", hot_ok
                 ? hot.analysis_snapshot_relative_path : ""},
+            {"snapshot_url", "/api/v1/cameras/" + task_id +
+                "/analysis-snapshot"},
             {"storage_degraded", hot_ok && hot.analysis_storage_degraded},
             {"snapshot_degraded", hot_ok && hot.analysis_snapshot_degraded},
             {"last_update_ms", hot_ok ? hot.analysis_last_update_ms : 0},
@@ -1342,6 +1398,93 @@ crow::response CameraTaskHttpController::latestFrame(
         static_cast<unsigned char>(bytes[bytes.size() - 2]) != 0xff ||
         static_cast<unsigned char>(bytes.back()) != 0xd9) {
         return errorResponse(404, "FRAME_NOT_READY", request_id);
+    }
+    crow::response response(200, std::move(bytes));
+    response.set_header("Content-Type", "image/jpeg");
+    response.set_header("Cache-Control", "no-store");
+    return response;
+}
+
+crow::response CameraTaskHttpController::analysisSnapshot(
+    const crow::request& request,
+    const std::string& task_id
+) const {
+    const std::string request_id = makeId("req_");
+    if (!authorized(request)) {
+        return errorResponse(401, "UNAUTHORIZED", request_id);
+    }
+    if (!safeIdentifier(task_id)) {
+        return errorResponse(400, "INVALID_IDENTIFIER", request_id);
+    }
+    CameraTaskDefinition task;
+    bool task_found = false;
+    std::string error;
+    if (!repository_->getTask(
+            task_id, false, task, task_found, error)) {
+        return errorResponse(
+            503, "STORAGE_UNAVAILABLE", request_id);
+    }
+    if (!task_found) {
+        return errorResponse(404, "TASK_NOT_FOUND", request_id);
+    }
+
+    CameraTaskRunRecord run;
+    bool run_found = false;
+    if (!getActiveRun(task_id, run, run_found, error)) {
+        return errorResponse(
+            503, "STORAGE_UNAVAILABLE", request_id);
+    }
+    if (!run_found) {
+        std::vector<CameraTaskRunRecord> runs;
+        if (!repository_->listRuns(
+                task_id, 1, 0, runs, error)) {
+            return errorResponse(
+                503, "STORAGE_UNAVAILABLE", request_id);
+        }
+        if (!runs.empty()) {
+            run = runs.front();
+            run_found = true;
+        }
+    }
+    if (!run_found) {
+        return errorResponse(
+            404, "ANALYSIS_SNAPSHOT_NOT_READY", request_id);
+    }
+
+    CameraTaskRunHotStatus hot;
+    const bool hot_found =
+        control_->getRunStatus(run.run_id, hot, error) && hot.found;
+    CameraRunAnalysisResultRecord stored;
+    bool stored_found = false;
+    if (!repository_->getRunAnalysisResult(
+            run.run_id, stored, stored_found, error)) {
+        stored_found = false;
+    }
+    const std::string relative =
+        hot_found && !hot.analysis_snapshot_relative_path.empty()
+            ? hot.analysis_snapshot_relative_path
+            : (stored_found
+                ? stored.snapshot_relative_path : std::string{});
+    std::filesystem::path resolved;
+    if (!resolveCameraArtifact(
+            config_.camera_tasks.output_dir,
+            relative,
+            resolved)) {
+        return errorResponse(
+            404, "ANALYSIS_SNAPSHOT_NOT_READY", request_id);
+    }
+    std::ifstream input(resolved, std::ios::binary);
+    std::string bytes;
+    bytes.assign(
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>());
+    if (bytes.size() < 4 ||
+        static_cast<unsigned char>(bytes[0]) != 0xff ||
+        static_cast<unsigned char>(bytes[1]) != 0xd8 ||
+        static_cast<unsigned char>(bytes[bytes.size() - 2]) != 0xff ||
+        static_cast<unsigned char>(bytes.back()) != 0xd9) {
+        return errorResponse(
+            404, "ANALYSIS_SNAPSHOT_NOT_READY", request_id);
     }
     crow::response response(200, std::move(bytes));
     response.set_header("Content-Type", "image/jpeg");

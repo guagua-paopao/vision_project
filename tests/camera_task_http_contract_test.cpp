@@ -396,6 +396,9 @@ int main() {
             responseBody(response)["analysis"]["config_version"] == "entry-line-v3" &&
             responseBody(response)["analysis"]["in_count"] == 3 &&
             responseBody(response)["analysis"]["occupancy"] == 6 &&
+            responseBody(response)["analysis"]["snapshot_url"] ==
+                "/api/v1/cameras/" + camera_id +
+                    "/analysis-snapshot" &&
             responseBody(response)["analysis"]["security"]["stages"]["phase4"]["ready"] == true &&
             responseBody(response)["pipeline"]["thread_running"] == true &&
             responseBody(response)["pipeline"]["sampled_frames"] == 8 &&
@@ -512,6 +515,45 @@ int main() {
     require(response.code == 200 && response.get_header_value("Content-Type") == "image/jpeg" &&
             response.body.size() == 4,
         "latest-frame must serve a complete JPEG for the Camera");
+
+    const auto analysis_path =
+        root / "output" /
+        std::filesystem::u8path(hot.analysis_snapshot_relative_path);
+    std::filesystem::create_directories(
+        analysis_path.parent_path());
+    {
+        std::ofstream snapshot(analysis_path, std::ios::binary);
+        const unsigned char jpeg[] = {
+            0xff, 0xd8, 0xff, 0xd9
+        };
+        snapshot.write(
+            reinterpret_cast<const char*>(jpeg),
+            sizeof(jpeg));
+    }
+    response = controller.analysisSnapshot(
+        request(), camera_id);
+    require(response.code == 200 &&
+            response.get_header_value("Content-Type") ==
+                "image/jpeg" &&
+            response.body.size() == 4,
+        "Camera analysis-snapshot must serve the annotated JPEG");
+    response = controller.analysisSnapshot(
+        request({}, false), camera_id);
+    require(response.code == 401,
+        "Camera analysis-snapshot must require Bearer authentication");
+    hot.analysis_snapshot_relative_path =
+        "../../outside.jpg";
+    control->run_status[replacement_run_id] = hot;
+    response = controller.analysisSnapshot(
+        request(), camera_id);
+    require(response.code == 404 &&
+            responseBody(response)["error_code"] ==
+                "ANALYSIS_SNAPSHOT_NOT_READY",
+        "Camera analysis-snapshot must reject output-root traversal");
+    hot.analysis_snapshot_relative_path =
+        camera_id + "/" + replacement_run_id +
+            "/analysis/latest.jpg";
+    control->run_status[replacement_run_id] = hot;
 
     response = controller.listHubs(request());
     require(response.code == 200 && responseBody(response)["items"].size() == 1,

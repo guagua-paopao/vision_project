@@ -236,7 +236,13 @@ crow::response PeopleFlowHttpServer::adminAsset(
     response.set_header("Cache-Control", file_name == "index.html" ? "no-store" : "public, max-age=300");
     response.set_header("X-Content-Type-Options", "nosniff");
     response.set_header("Content-Security-Policy",
-        "default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'");
+        "default-src 'self'; base-uri 'none'; object-src 'none'; "
+        "frame-ancestors 'none'; form-action 'self'; "
+        "img-src 'self' blob:; style-src 'self'; "
+        "script-src 'self'; connect-src 'self'");
+    response.set_header("Referrer-Policy", "no-referrer");
+    response.set_header(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     return response;
 }
 
