@@ -1,18 +1,25 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <nlohmann/json.hpp>
 
+#include "business/line_crossing_counter.h"
+#include "business/person_detector_adapter.h"
+#include "business/person_tracker.h"
 #include "business/camera_task_repository.h"
 #include "business/postgres_client.h"
 #include "config.h"
 #include "postgres_test_guard.h"
 #include "server/camera_algorithm_processor.h"
+#include "server/camera_task_api_control.h"
 
 namespace {
 
@@ -72,11 +79,33 @@ CameraInferenceResult inference(
     result.job.algorithm_profile = "security_default";
     result.job.algorithms = { "people_flow" };
     result.job.callback_profile = "backend_primary";
+    result.job.analysis_config_version = "runspec-test-v3";
+    result.job.target_infer_fps = 10.0;
+    result.job.initial_occupancy = 4;
+    result.job.snapshot_fps = 10;
+    result.job.algorithm_parameters_json = R"({"line_id":"main"})";
+    result.job.capture_fps = 25.0;
+    result.job.source_fps = 25.0;
+    result.job.latest_frame_age_ms = 10;
     result.job.frame = std::move(frame);
     result.output.model_type = "pose";
     result.output.detections = { detection };
     return result;
 }
+
+class CapturingAnalysisStatusSink final : public ICameraAnalysisStatusSink {
+public:
+    bool updateAnalysisStatus(
+        const CameraTaskRunHotStatus& status,
+        std::string& error) override {
+        error.clear();
+        latest = status;
+        ++updates;
+        return true;
+    }
+    CameraTaskRunHotStatus latest;
+    int updates = 0;
+};
 
 }  // namespace
 
@@ -86,8 +115,11 @@ int main() {
 
     AppConfig config;
     config.camera_tasks.postgres_dsn_env = "YOLO11_TEST_POSTGRES_DSN";
+    const auto output_root = std::filesystem::temp_directory_path() /
+        ("camera_r3_analysis_" + std::to_string(stamp));
+    config.camera_tasks.output_dir = output_root.string();
     config.people_flow.config_version = "algorithm-test-v1";
-    config.people_flow.warmup_frames_after_reconnect = 0;
+    config.people_flow.warmup_frames_after_reconnect = 1;
     config.people_flow.roi.enabled = false;
     config.people_flow.person.min_width_px = 1;
     config.people_flow.person.min_height_px = 1;
@@ -142,12 +174,44 @@ int main() {
     run.last_update_ms = stamp;
     require(repository->createRun(run, code, error), "algorithm run must persist: " + error);
 
-    CameraAlgorithmProcessor processor(config, repository);
+    auto status_sink = std::make_shared<CapturingAnalysisStatusSink>();
+    CameraAlgorithmProcessor processor(config, repository, status_sink);
     require(processor.start(error), "algorithm processor must start: " + error);
     auto first = inference(1, stamp + 100, modelDetection(40, 40, 20, 30));
-    auto second = inference(2, stamp + 200, modelDetection(40, 0, 20, 30));
-    require(processor.handle(first, error), "first analysis frame must process: " + error);
-    require(processor.handle(second, error), "crossing analysis frame must process: " + error);
+    auto second = inference(2, stamp + 200, modelDetection(40, 40, 20, 30));
+    auto third = inference(3, stamp + 300, modelDetection(40, 0, 20, 30));
+
+    PersonDetectorAdapter baseline_adapter(config.people_flow);
+    PersonTracker baseline_tracker(config.people_flow.tracker);
+    LineCrossingCounter baseline_counter(
+        config.people_flow.counting,
+        first.job.run_id,
+        first.job.task_id,
+        first.job.analysis_config_version,
+        first.job.initial_occupancy);
+    auto advance_baseline = [&](const CameraInferenceResult& value, bool warmup) {
+        const auto detections = baseline_adapter.filter(
+            value.output, value.job.frame->image.size(), value.job.capture_time_ms);
+        baseline_tracker.update(
+            detections,
+            value.job.frame->image.cols,
+            value.job.frame->image.rows,
+            value.job.capture_time_ms);
+        if (!warmup) {
+            baseline_counter.update(
+                baseline_tracker.confirmedTracks(),
+                value.job.frame->image.cols,
+                value.job.frame->image.rows,
+                value.job.capture_time_ms);
+        }
+    };
+    advance_baseline(first, true);
+    advance_baseline(second, false);
+    advance_baseline(third, false);
+
+    require(processor.handle(first, error), "warmup analysis frame must process: " + error);
+    require(processor.handle(second, error), "baseline analysis frame must process: " + error);
+    require(processor.handle(third, error), "crossing analysis frame must process: " + error);
 
     std::vector<SecurityAlertEventRecord> alerts;
     require(repository->listAlerts(task.task_id, "PEOPLE_FLOW_IN", 1, 20, 0, alerts, error) &&
@@ -155,12 +219,52 @@ int main() {
             alerts.front().run_id == run.run_id &&
             alerts.front().delivery_status == "pending",
         "line crossing must create one durable alert and pending callback outbox");
+    CameraRunAnalysisResultRecord analysis;
+    bool found = false;
+    require(repository->getRunAnalysisResult(
+            run.run_id, analysis, found, error) && found,
+        "R3 analysis snapshot must be durable");
+    const auto baseline_counts = baseline_counter.counts();
+    const auto security = nlohmann::json::parse(analysis.security_state_json);
+    require(analysis.initial_occupancy == first.job.initial_occupancy &&
+            analysis.in_count == baseline_counts.in_count &&
+            analysis.out_count == baseline_counts.out_count &&
+            analysis.final_occupancy == baseline_counts.occupancy &&
+            analysis.last_live_persons == baseline_counts.live_persons &&
+            security["stages"].contains("phase1") &&
+            security["stages"].contains("phase2") &&
+            security["stages"].contains("phase3") &&
+            security["stages"].contains("phase4"),
+        "unified Camera output must match the deterministic legacy People Flow core");
+    const auto annotated_path =
+        output_root / std::filesystem::u8path(analysis.snapshot_relative_path);
+    require(!analysis.snapshot_relative_path.empty() &&
+            !cv::imread(annotated_path.string()).empty() &&
+            !analysis.snapshot_degraded,
+        "R3 must produce a readable annotated latest JPEG");
+    require(status_sink->updates >= 3 &&
+            status_sink->latest.analysis_config_version ==
+                first.job.analysis_config_version &&
+            status_sink->latest.in_count == baseline_counts.in_count &&
+            status_sink->latest.occupancy == baseline_counts.occupancy,
+        "R3 must publish a complete hot analysis snapshot");
+
+    auto reconnect = inference(4, stamp + 400, modelDetection(40, 0, 20, 30));
+    reconnect.job.reconnect_count = 1;
+    require(processor.handle(reconnect, error),
+        "first frame after reconnect must be accepted as warmup");
+    alerts.clear();
+    require(repository->listAlerts(task.task_id, "PEOPLE_FLOW_IN", 1, 20, 0, alerts, error) &&
+            alerts.size() == 1 &&
+            status_sink->latest.analysis_reconnect_count == 1 &&
+            status_sink->latest.in_count == baseline_counts.in_count,
+        "reconnect warmup must not create a false crossing or reset accumulated counts");
     const auto metrics = processor.snapshot();
-    require(metrics.active_sessions == 1 && metrics.processed_frames == 2 &&
+    require(metrics.active_sessions == 1 && metrics.processed_frames == 4 &&
             metrics.persisted_alerts == 1 && metrics.failed_frames == 0,
         "algorithm processor metrics must expose session, frame, and alert counts");
 
-    auto unsupported = inference(3, stamp + 300, modelDetection(40, 0, 20, 30));
+    auto unsupported = inference(5, stamp + 500, modelDetection(40, 0, 20, 30));
     unsupported.job.task_id = "unsupported_camera";
     unsupported.job.run_id = "unsupported_run";
     unsupported.job.algorithms = { "ppe_detection" };
@@ -172,6 +276,8 @@ int main() {
     require(processor.snapshot().active_sessions == 0,
         "camera detach must release stateful analytics session");
     processor.stop();
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(output_root, cleanup_error);
     std::cout << "Camera algorithm processor tests passed\n";
     return 0;
 }

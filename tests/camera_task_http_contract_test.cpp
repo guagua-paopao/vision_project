@@ -372,12 +372,31 @@ int main() {
     hot.skipped_frames = 4;
     hot.last_source_sequence = 55;
     hot.last_frame_time_ms = nowMs();
+    hot.analysis_config_version = "entry-line-v3";
+    hot.infer_fps = 6.5;
+    hot.last_inference_ms = 12.25;
+    hot.analysis_frame_count = 7;
+    hot.initial_occupancy = 4;
+    hot.in_count = 3;
+    hot.out_count = 1;
+    hot.occupancy = 6;
+    hot.live_persons = 2;
+    hot.analysis_snapshot_relative_path =
+        camera_id + "/" + replacement_run_id + "/analysis/latest.jpg";
+    hot.security_state_json =
+        R"({"stages":{"phase1":{"ready":true},"phase2":{"ready":true},"phase3":{"ready":true},"phase4":{"ready":true}}})";
+    hot.analysis_last_update_ms = nowMs();
     control->run_status[replacement_run_id] = hot;
     response = controller.taskStatus(request(), camera_id);
     require(response.code == 200 && responseBody(response)["runtime_stale"] == false &&
             responseBody(response)["status"] == "running" &&
             responseBody(response)["desired_state"] == "running" &&
             responseBody(response)["analysis"]["enabled"] == true &&
+            responseBody(response)["analysis"]["runtime_stale"] == false &&
+            responseBody(response)["analysis"]["config_version"] == "entry-line-v3" &&
+            responseBody(response)["analysis"]["in_count"] == 3 &&
+            responseBody(response)["analysis"]["occupancy"] == 6 &&
+            responseBody(response)["analysis"]["security"]["stages"]["phase4"]["ready"] == true &&
             responseBody(response)["pipeline"]["thread_running"] == true &&
             responseBody(response)["pipeline"]["sampled_frames"] == 8 &&
             responseBody(response)["hub"]["open_count"] == 1,

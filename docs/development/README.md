@@ -43,3 +43,4 @@ The People Flow and Camera business-unification program is tracked separately:
 - [Approved unification refactor plan](../PEOPLE_FLOW_CAMERA_UNIFICATION_REFACTOR_PLAN.md)
 - [R0-R1 contract baseline and application boundary](UNIFIED_CAMERA_R0_R1_FOUNDATION.md)
 - [R2 immutable RunSpec and additive schema](UNIFIED_CAMERA_R2_RUNSPEC_AND_SCHEMA.md)
+- [R3 People Flow-equivalent Camera Pipeline output](UNIFIED_CAMERA_R3_PEOPLE_FLOW_EQUIVALENCE.md)

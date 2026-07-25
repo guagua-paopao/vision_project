@@ -1238,6 +1238,13 @@ crow::response CameraTaskHttpController::taskStatus(
     const bool hot_ok = control_->getRunStatus(run.run_id, hot, ignored) && hot.found;
     const bool stale = !hot_ok || nowMs() - hot.last_update_ms >
         std::max(5000, config_.camera_hub.status_update_interval_ms * 3);
+    const bool analysis_stale = !hot_ok || hot.analysis_last_update_ms <= 0 ||
+        nowMs() - hot.analysis_last_update_ms >
+            std::max(5000, config_.camera_hub.status_update_interval_ms * 3);
+    auto security_state = hot_ok
+        ? json::parse(hot.security_state_json, nullptr, false)
+        : json(nullptr);
+    if (security_state.is_discarded()) security_state = json::object();
     const long long pipeline_started_at_ms = hot_ok && hot.pipeline_started_at_ms > 0
         ? hot.pipeline_started_at_ms : run.start_time_ms;
     const long long pipeline_thread_age_ms = pipeline_started_at_ms > 0
@@ -1278,7 +1285,26 @@ crow::response CameraTaskHttpController::taskStatus(
         {"analysis", {
             {"enabled", task.analysis_enabled}, {"target_infer_fps", task.target_infer_fps},
             {"algorithm_profile", task.algorithm_profile}, {"algorithms", task.algorithms},
-            {"state", task.analysis_enabled ? "configured" : "disabled"}
+            {"state", !task.analysis_enabled ? "disabled" :
+                (analysis_stale ? "configured" : "running")},
+            {"runtime_stale", analysis_stale},
+            {"config_version", hot_ok ? hot.analysis_config_version : ""},
+            {"infer_fps", hot_ok ? hot.infer_fps : 0.0},
+            {"last_inference_ms", hot_ok ? hot.last_inference_ms : 0.0},
+            {"frame_count", hot_ok ? hot.analysis_frame_count : 0},
+            {"initial_occupancy", hot_ok ? hot.initial_occupancy : 0},
+            {"in_count", hot_ok ? hot.in_count : 0},
+            {"out_count", hot_ok ? hot.out_count : 0},
+            {"occupancy", hot_ok ? hot.occupancy : 0},
+            {"live_persons", hot_ok ? hot.live_persons : 0},
+            {"reconnect_count", hot_ok ? hot.analysis_reconnect_count : 0},
+            {"warmup_frames_remaining", hot_ok ? hot.warmup_frames_remaining : 0},
+            {"snapshot_relative_path", hot_ok
+                ? hot.analysis_snapshot_relative_path : ""},
+            {"storage_degraded", hot_ok && hot.analysis_storage_degraded},
+            {"snapshot_degraded", hot_ok && hot.analysis_snapshot_degraded},
+            {"last_update_ms", hot_ok ? hot.analysis_last_update_ms : 0},
+            {"security", security_state}
         }},
         {"error_code", hot_ok ? hot.error_code : run.error_code},
         {"error", (hot_ok ? hot.error_code : run.error_code).empty()

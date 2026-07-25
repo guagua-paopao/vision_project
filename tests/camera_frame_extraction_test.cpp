@@ -172,6 +172,7 @@ public:
         std::string& error) override {
         std::lock_guard<std::mutex> lock(mutex_);
         sequences_[job.run_id].push_back(job.source_sequence);
+        latest_[job.run_id] = job;
         result.accepted = true;
         error.clear();
         return true;
@@ -192,9 +193,15 @@ public:
         return std::find(detached_.begin(), detached_.end(), run_id) != detached_.end();
     }
 
+    CameraFrameJob latest(const std::string& run_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return latest_[run_id];
+    }
+
 private:
     std::mutex mutex_;
     std::map<std::string, std::vector<unsigned long long>> sequences_;
+    std::map<std::string, CameraFrameJob> latest_;
     std::vector<std::string> detached_;
 };
 
@@ -252,6 +259,10 @@ CameraTaskCommand makeCommand(const CameraTaskDefinition& task, const CameraTask
     command.target_infer_fps = task.target_infer_fps;
     command.algorithm_profile = task.algorithm_profile;
     command.algorithms = task.algorithms;
+    command.analysis_config_version = "pipeline-r3-v1";
+    command.initial_occupancy = 5;
+    command.snapshot_fps = 2;
+    command.algorithm_parameters_json = R"({"line_id":"main"})";
     command.create_time_ms = run.create_time_ms;
     return command;
 }
@@ -355,6 +366,13 @@ int main() {
                 [](auto left, auto right) { return right <= left; }) ==
                 live_analysis_sequences.end(),
         "analysis FrameJobs must be sampled near target FPS with strictly increasing source_sequence");
+    const auto live_analysis_job = inference_sink->latest(slow_run.run_id);
+    require(live_analysis_job.analysis_config_version == "pipeline-r3-v1" &&
+            live_analysis_job.initial_occupancy == 5 &&
+            live_analysis_job.snapshot_fps == 2 &&
+            live_analysis_job.algorithm_parameters_json == R"({"line_id":"main"})" &&
+            live_analysis_job.capture_fps > 0.0,
+        "CameraPipeline must propagate immutable R3 analysis and reconnect context");
 
     fast->requestStop();
     fast_thread.join();

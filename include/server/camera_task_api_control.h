@@ -7,7 +7,29 @@
 
 namespace yolo11_server {
 
-struct CameraTaskRunHotStatus {
+struct CameraAnalysisSnapshot {
+    std::string analysis_config_version;
+    double infer_fps = 0.0;
+    double last_inference_ms = 0.0;
+    long long analysis_frame_count = 0;
+    long long initial_occupancy = 0;
+    long long in_count = 0;
+    long long out_count = 0;
+    long long occupancy = 0;
+    int live_persons = 0;
+    int analysis_reconnect_count = 0;
+    int warmup_frames_remaining = 0;
+    std::string security_state_json = "{}";
+    std::string analysis_snapshot_relative_path;
+    bool analysis_storage_degraded = false;
+    bool analysis_snapshot_degraded = false;
+    long long analysis_last_update_ms = 0;
+};
+
+// Redis Run status is the merged capture/extraction snapshot plus the
+// algorithm-owned CameraAnalysisSnapshot base subobject. The two writers
+// update disjoint Redis hash fields.
+struct CameraTaskRunHotStatus : CameraAnalysisSnapshot {
     bool found = false;
     std::string run_id;
     std::string task_id;

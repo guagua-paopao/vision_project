@@ -313,6 +313,19 @@ void CameraPipeline::runImpl() {
                         analysis_job.algorithm_profile = command_.algorithm_profile;
                         analysis_job.algorithms = command_.algorithms;
                         analysis_job.callback_profile = command_.callback_profile;
+                        analysis_job.analysis_config_version =
+                            command_.analysis_config_version;
+                        analysis_job.target_infer_fps =
+                            command_.target_infer_fps;
+                        analysis_job.initial_occupancy = command_.initial_occupancy;
+                        analysis_job.snapshot_fps = command_.snapshot_fps;
+                        analysis_job.algorithm_parameters_json =
+                            command_.algorithm_parameters_json;
+                        analysis_job.reconnect_count = hub.reconnect_count;
+                        analysis_job.capture_fps = hub.capture_fps;
+                        analysis_job.source_fps = hub.source_fps;
+                        analysis_job.latest_frame_age_ms =
+                            hub.latest_frame_age_ms;
                         analysis_job.frame = frame.frame;
                         CameraFrameJobSubmitResult submit_result;
                         std::string submit_error;

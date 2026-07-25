@@ -7,6 +7,7 @@
 #include <string>
 
 #include "business/camera_task_repository.h"
+#include "business/camera_task_runtime_control.h"
 #include "server/app_config.h"
 #include "server/camera_inference_pool.h"
 
@@ -26,7 +27,8 @@ class CameraAlgorithmProcessor final : public ICameraInferenceResultHandler {
 public:
     CameraAlgorithmProcessor(
         AppConfig config,
-        std::shared_ptr<CameraTaskRepository> repository
+        std::shared_ptr<CameraTaskRepository> repository,
+        std::shared_ptr<ICameraAnalysisStatusSink> status_sink = {}
     );
     ~CameraAlgorithmProcessor() noexcept override;
 
@@ -49,6 +51,7 @@ private:
 
     AppConfig config_;
     std::shared_ptr<CameraTaskRepository> repository_;
+    std::shared_ptr<ICameraAnalysisStatusSink> status_sink_;
     mutable std::mutex sessions_mutex_;
     std::map<std::string, std::shared_ptr<Session>> sessions_;
     std::atomic<bool> running_{ false };

@@ -17,7 +17,8 @@ namespace yolo11_server {
 
 class CameraTaskQueue final : public ICameraTaskCommandSource,
                               public ICameraTaskRuntimeControl,
-                              public ICameraTaskApiControl {
+                              public ICameraTaskApiControl,
+                              public ICameraAnalysisStatusSink {
 public:
     CameraTaskQueue(
         const RedisSection& redis_config,
@@ -53,6 +54,9 @@ public:
     bool requestStop(const std::string& run_id, std::string& error) override;
     bool isStopRequested(const std::string& run_id, bool& requested, std::string& error) override;
     bool updateRunStatus(const CameraTaskRunHotStatus& status, std::string& error) override;
+    bool updateAnalysisStatus(
+        const CameraTaskRunHotStatus& status,
+        std::string& error) override;
     bool getRunStatus(
         const std::string& run_id,
         CameraTaskRunHotStatus& status,
