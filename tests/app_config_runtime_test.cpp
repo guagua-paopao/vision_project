@@ -38,6 +38,11 @@ int main(int argc, char** argv) {
                     "security", "temporal_action"
                 }),
         "server fixed inference-pool configuration must parse");
+    require(!server.runtime.unified_camera_pipeline &&
+            server.runtime.people_flow_compatibility &&
+            server.runtime.legacy_people_flow_fallback &&
+            !server.runtime.shadow_compare,
+        "server R4 migration switches must retain the rollback-safe baseline");
     require(!server.callbacks.enabled &&
             server.callbacks.poll_interval_ms == 250 &&
             server.callbacks.request_timeout_ms == 5000 &&
@@ -81,6 +86,13 @@ int main(int argc, char** argv) {
     require(worker.analysis.enabled && worker.analysis.inference_workers == 2 &&
             worker.analysis.model_init_timeout_ms == 120000,
         "worker fixed inference-pool configuration must parse");
+    require(worker.runtime.unified_camera_pipeline ==
+                server.runtime.unified_camera_pipeline &&
+            worker.runtime.people_flow_compatibility ==
+                server.runtime.people_flow_compatibility &&
+            worker.runtime.legacy_people_flow_fallback ==
+                server.runtime.legacy_people_flow_fallback,
+        "server and worker R4 migration switches must match");
     require(!worker.callbacks.enabled &&
             worker.callbacks.profiles.count("backend_primary") == 1 &&
             worker.callbacks.profiles.at("backend_primary").url_env ==

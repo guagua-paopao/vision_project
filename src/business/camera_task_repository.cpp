@@ -737,6 +737,8 @@ bool CameraTaskRepository::createRun(
         return false;
     }
     if ((run.origin != "camera_api" && run.origin != "people_flow_compat") ||
+        (run.origin == "people_flow_compat" &&
+            run.legacy_session_id.empty()) ||
         (!run.legacy_session_id.empty() &&
             !validServiceIdentifier(run.legacy_session_id, 160)) ||
         (!run.analysis_config_version.empty() &&
@@ -765,11 +767,21 @@ bool CameraTaskRepository::createRun(
     }
     DbPtr db;
     if (!openDatabase(config_, db, error)) return false;
+    if (!execSql(db.get(), "BEGIN;", error)) return false;
+    bool committed = false;
+    const auto rollback = [&]() {
+        if (committed) return;
+        std::string ignored;
+        execSql(db.get(), "ROLLBACK;", ignored);
+    };
     StatementPtr statement;
     if (!prepare(db.get(),
         "INSERT INTO camera_task_runs(run_id,task_id,definition_version,definition_json,status,"
         "camera_profile,create_time_ms,last_update_ms,origin,legacy_session_id,"
-        "analysis_config_version) VALUES(?,?,?,?,?,?,?,?,?,?,?);", statement, error)) return false;
+        "analysis_config_version) VALUES(?,?,?,?,?,?,?,?,?,?,?);", statement, error)) {
+        rollback();
+        return false;
+    }
     bindText(statement.get(), 1, run.run_id);
     bindText(statement.get(), 2, run.task_id);
     sqlite3_bind_int(statement.get(), 3, run.definition_version);
@@ -783,12 +795,61 @@ bool CameraTaskRepository::createRun(
     else bindText(statement.get(), 10, run.legacy_session_id);
     if (run.analysis_config_version.empty()) sqlite3_bind_null(statement.get(), 11);
     else bindText(statement.get(), 11, run.analysis_config_version);
-    if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
-    error = sqlite3_errmsg(db.get());
-    const int extended = sqlite3_extended_errcode(db.get());
-    error_code = (extended == SQLITE_CONSTRAINT_UNIQUE || extended == SQLITE_CONSTRAINT_PRIMARYKEY)
-        ? "ACTIVE_RUN_EXISTS" : "STORAGE_UNAVAILABLE";
-    return false;
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db.get());
+        const int extended = sqlite3_extended_errcode(db.get());
+        error_code =
+            (extended == SQLITE_CONSTRAINT_UNIQUE ||
+                extended == SQLITE_CONSTRAINT_PRIMARYKEY)
+                ? "ACTIVE_RUN_EXISTS" : "STORAGE_UNAVAILABLE";
+        rollback();
+        return false;
+    }
+    if (run.origin == "people_flow_compat") {
+        const auto definition =
+            json::parse(run.definition_json, nullptr, false);
+        const long long initial =
+            definition.is_object() &&
+                definition.contains("analysis") &&
+                definition["analysis"].is_object()
+                ? std::max(
+                    0LL,
+                    definition["analysis"].value(
+                        "initial_occupancy", 0LL))
+                : 0LL;
+        statement.reset();
+        if (!prepare(db.get(),
+            "INSERT INTO pf_sessions("
+            "session_id,camera_id,status,start_time_ms,initial_occupancy,"
+            "in_count,out_count,final_occupancy,config_version,consistency_ok)"
+            " VALUES(?,?,?, ?,?,0,0,?,?,1);",
+            statement,
+            error)) {
+            error_code = "STORAGE_UNAVAILABLE";
+            rollback();
+            return false;
+        }
+        bindText(statement.get(), 1, run.legacy_session_id);
+        bindText(statement.get(), 2, run.task_id);
+        bindText(statement.get(), 3, run.status);
+        sqlite3_bind_int64(statement.get(), 4, run.create_time_ms);
+        sqlite3_bind_int64(statement.get(), 5, initial);
+        sqlite3_bind_int64(statement.get(), 6, initial);
+        bindText(statement.get(), 7, run.analysis_config_version);
+        if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+            error = sqlite3_errmsg(db.get());
+            error_code = "STORAGE_UNAVAILABLE";
+            rollback();
+            return false;
+        }
+    }
+    if (!execSql(db.get(), "COMMIT;", error)) {
+        error_code = "STORAGE_UNAVAILABLE";
+        rollback();
+        return false;
+    }
+    committed = true;
+    return true;
 }
 
 bool CameraTaskRepository::getRun(
@@ -804,6 +865,36 @@ bool CameraTaskRepository::getRun(
     StatementPtr statement;
     if (!prepare(db.get(), sql.c_str(), statement, error)) return false;
     bindText(statement.get(), 1, run_id);
+    const int result = sqlite3_step(statement.get());
+    if (result == SQLITE_DONE) return true;
+    if (result != SQLITE_ROW) {
+        error = sqlite3_errmsg(db.get());
+        return false;
+    }
+    run = readRun(statement.get());
+    found = true;
+    return true;
+}
+
+bool CameraTaskRepository::getRunByLegacySessionId(
+    const std::string& legacy_session_id,
+    CameraTaskRunRecord& run,
+    bool& found,
+    std::string& error
+) const {
+    found = false;
+    error.clear();
+    if (!validServiceIdentifier(legacy_session_id, 160)) {
+        error = "legacy session identifier is invalid";
+        return false;
+    }
+    DbPtr db;
+    if (!openDatabase(config_, db, error)) return false;
+    const std::string sql = std::string(runSelectSql()) +
+        " WHERE legacy_session_id=?;";
+    StatementPtr statement;
+    if (!prepare(db.get(), sql.c_str(), statement, error)) return false;
+    bindText(statement.get(), 1, legacy_session_id);
     const int result = sqlite3_step(statement.get());
     if (result == SQLITE_DONE) return true;
     if (result != SQLITE_ROW) {
@@ -862,13 +953,23 @@ bool CameraTaskRepository::transitionRun(
     }
     DbPtr db;
     if (!openDatabase(config_, db, error)) return false;
+    if (!execSql(db.get(), "BEGIN;", error)) return false;
+    bool committed = false;
+    const auto rollback = [&]() {
+        if (committed) return;
+        std::string ignored;
+        execSql(db.get(), "ROLLBACK;", ignored);
+    };
     StatementPtr statement;
     if (!prepare(db.get(),
         "UPDATE camera_task_runs SET status=?,hub_instance_id=?,start_time_ms=?,stop_time_ms=?,"
         "last_update_ms=?,worker_consumer=?,capture_backend=?,capture_fps=?,save_fps=?,"
         "consumed_frames=?,saved_frames=?,skipped_frames=?,dropped_frames=?,last_source_sequence=?,"
         "last_frame_time_ms=?,width=?,height=?,stop_reason=?,error_code=?,error_message=? "
-        "WHERE run_id=? AND status=?;", statement, error)) return false;
+        "WHERE run_id=? AND status=?;", statement, error)) {
+        rollback();
+        return false;
+    }
     bindText(statement.get(), 1, next.status);
     bindText(statement.get(), 2, next.hub_instance_id);
     bindNullableInt64(statement.get(), 3, next.start_time_ms);
@@ -893,12 +994,52 @@ bool CameraTaskRepository::transitionRun(
     bindText(statement.get(), 22, current.status);
     if (sqlite3_step(statement.get()) != SQLITE_DONE) {
         error = sqlite3_errmsg(db.get());
+        rollback();
         return false;
     }
-    if (sqlite3_changes(db.get()) > 0) return true;
-    error_code = "RUN_STATE_CONFLICT";
-    error = "camera run changed concurrently";
-    return false;
+    if (sqlite3_changes(db.get()) == 0) {
+        error_code = "RUN_STATE_CONFLICT";
+        error = "camera run changed concurrently";
+        rollback();
+        return false;
+    }
+    if (current.origin == "people_flow_compat") {
+        statement.reset();
+        if (!prepare(db.get(),
+            "UPDATE pf_sessions SET status=?,start_time_ms=?,stop_time_ms=?,"
+            "stop_reason=?,error=? WHERE session_id=?;",
+            statement,
+            error)) {
+            error_code = "STORAGE_UNAVAILABLE";
+            rollback();
+            return false;
+        }
+        bindText(statement.get(), 1, next.status);
+        sqlite3_bind_int64(
+            statement.get(),
+            2,
+            next.start_time_ms > 0
+                ? next.start_time_ms : current.create_time_ms);
+        bindNullableInt64(statement.get(), 3, next.stop_time_ms);
+        if (next.stop_reason.empty()) sqlite3_bind_null(statement.get(), 4);
+        else bindText(statement.get(), 4, next.stop_reason);
+        if (next.error_message.empty()) sqlite3_bind_null(statement.get(), 5);
+        else bindText(statement.get(), 5, next.error_message);
+        bindText(statement.get(), 6, current.legacy_session_id);
+        if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+            error_code = "STORAGE_UNAVAILABLE";
+            error = sqlite3_errmsg(db.get());
+            rollback();
+            return false;
+        }
+    }
+    if (!execSql(db.get(), "COMMIT;", error)) {
+        error_code = "STORAGE_UNAVAILABLE";
+        rollback();
+        return false;
+    }
+    committed = true;
+    return true;
 }
 
 bool CameraTaskRepository::updateRunProgress(const CameraTaskRunRecord& run, std::string& error) const {
@@ -981,6 +1122,13 @@ bool CameraTaskRepository::upsertRunAnalysisResult(
 
     DbPtr db;
     if (!openDatabase(config_, db, error)) return false;
+    if (!execSql(db.get(), "BEGIN;", error)) return false;
+    bool committed = false;
+    const auto rollback = [&]() {
+        if (committed) return;
+        std::string ignored;
+        execSql(db.get(), "ROLLBACK;", ignored);
+    };
     StatementPtr statement;
     if (!prepare(db.get(),
         "INSERT INTO camera_run_analysis_results("
@@ -999,6 +1147,7 @@ bool CameraTaskRepository::upsertRunAnalysisResult(
         "last_update_ms=excluded.last_update_ms,"
         "finalized_at_ms=excluded.finalized_at_ms;",
         statement, error)) {
+        rollback();
         return false;
     }
     bindText(statement.get(), 1, result.run_id);
@@ -1015,9 +1164,46 @@ bool CameraTaskRepository::upsertRunAnalysisResult(
     sqlite3_bind_int(statement.get(), 11, result.snapshot_degraded ? 1 : 0);
     sqlite3_bind_int64(statement.get(), 12, result.last_update_ms);
     bindNullableInt64(statement.get(), 13, result.finalized_at_ms);
-    if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
-    error = sqlite3_errmsg(db.get());
-    return false;
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db.get());
+        rollback();
+        return false;
+    }
+    if (run.origin == "people_flow_compat") {
+        statement.reset();
+        if (!prepare(db.get(),
+            "UPDATE pf_sessions SET in_count=?,out_count=?,"
+            "final_occupancy=?,consistency_ok=? WHERE session_id=?;",
+            statement,
+            error)) {
+            rollback();
+            return false;
+        }
+        sqlite3_bind_int64(statement.get(), 1, result.in_count);
+        sqlite3_bind_int64(statement.get(), 2, result.out_count);
+        sqlite3_bind_int64(statement.get(), 3, result.final_occupancy);
+        sqlite3_bind_int(
+            statement.get(),
+            4,
+            result.final_occupancy ==
+                std::max(
+                    0LL,
+                    result.initial_occupancy +
+                        result.in_count - result.out_count)
+                ? 1 : 0);
+        bindText(statement.get(), 5, run.legacy_session_id);
+        if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+            error = sqlite3_errmsg(db.get());
+            rollback();
+            return false;
+        }
+    }
+    if (!execSql(db.get(), "COMMIT;", error)) {
+        rollback();
+        return false;
+    }
+    committed = true;
+    return true;
 }
 
 bool CameraTaskRepository::getRunAnalysisResult(
@@ -1197,6 +1383,9 @@ bool CameraTaskRepository::insertAlert(
 ) const {
     error_code.clear();
     error.clear();
+    const auto alert_payload =
+        json::parse(alert.payload_json, nullptr, false);
+    bool preserve_people_flow_projection = false;
     if (!validServiceIdentifier(alert.event_id, 160) ||
         !validServiceIdentifier(alert.task_id, 160) ||
         !validServiceIdentifier(alert.run_id, 160) ||
@@ -1210,11 +1399,27 @@ bool CameraTaskRepository::insertAlert(
         alert.severity < 1 || alert.severity > 5 || alert.occurred_at_ms <= 0 ||
         alert.created_at_ms <= 0 ||
         (!callback_profile.empty() && !validServiceIdentifier(callback_profile, 160)) ||
-        (alert.confidence && (*alert.confidence < 0.0 || *alert.confidence > 1.0)) ||
-        json::parse(alert.payload_json, nullptr, false).is_discarded()) {
+        (alert.confidence &&
+            (*alert.confidence < 0.0 || *alert.confidence > 1.0)) ||
+        alert_payload.is_discarded()) {
         error_code = "INVALID_ALERT";
         error = "alert is outside allowed bounds";
         return false;
+    }
+    if (alert.category == "people_flow" &&
+        (alert.event_type == "PEOPLE_FLOW_IN" ||
+            alert.event_type == "PEOPLE_FLOW_OUT")) {
+        CameraTaskRunRecord alert_run;
+        bool run_found = false;
+        if (!getRun(
+                alert.run_id, alert_run, run_found, error)) {
+            error_code = "STORAGE_UNAVAILABLE";
+            return false;
+        }
+        preserve_people_flow_projection =
+            run_found &&
+            alert_run.origin == "people_flow_compat" &&
+            !alert_run.legacy_session_id.empty();
     }
     DbPtr db;
     if (!openDatabase(config_, db, error)) return false;
@@ -1286,6 +1491,76 @@ bool CameraTaskRepository::insertAlert(
         }
     }
 
+    if (preserve_people_flow_projection) {
+        statement.reset();
+        if (!prepare(db.get(),
+            "INSERT INTO pf_crossing_events("
+            "event_id,session_id,camera_id,line_id,event_time_ms,direction,"
+            "track_id,confidence,point_x_norm,point_y_norm,evidence_path,"
+            "config_version)"
+            " SELECT ?,r.legacy_session_id,?,?,?,?,?,?,?,?,NULL,?"
+            " FROM camera_task_runs r"
+            " WHERE r.run_id=? AND r.origin='people_flow_compat'"
+            " ON CONFLICT(event_id) DO NOTHING;",
+            statement,
+            error)) {
+            error_code = "STORAGE_UNAVAILABLE";
+            rollback();
+            return false;
+        }
+        bindText(statement.get(), 1, alert.event_id);
+        bindText(statement.get(), 2, alert.task_id);
+        bindText(
+            statement.get(),
+            3,
+            alert_payload.is_object()
+                ? alert_payload.value("line_id", std::string("main"))
+                : std::string("main"));
+        sqlite3_bind_int64(statement.get(), 4, alert.occurred_at_ms);
+        bindText(
+            statement.get(),
+            5,
+            alert.event_type == "PEOPLE_FLOW_IN" ? "IN" : "OUT");
+        sqlite3_bind_int64(
+            statement.get(), 6, alert.track_id.value_or(0));
+        if (alert.confidence) {
+            sqlite3_bind_double(statement.get(), 7, *alert.confidence);
+        }
+        else {
+            sqlite3_bind_null(statement.get(), 7);
+        }
+        if (alert_payload.is_object() &&
+            alert_payload.contains("point_x_norm") &&
+            alert_payload["point_x_norm"].is_number()) {
+            sqlite3_bind_double(
+                statement.get(),
+                8,
+                alert_payload["point_x_norm"].get<double>());
+        }
+        else {
+            sqlite3_bind_null(statement.get(), 8);
+        }
+        if (alert_payload.is_object() &&
+            alert_payload.contains("point_y_norm") &&
+            alert_payload["point_y_norm"].is_number()) {
+            sqlite3_bind_double(
+                statement.get(),
+                9,
+                alert_payload["point_y_norm"].get<double>());
+        }
+        else {
+            sqlite3_bind_null(statement.get(), 9);
+        }
+        bindText(statement.get(), 10, alert.config_version);
+        bindText(statement.get(), 11, alert.run_id);
+        if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+            error = sqlite3_errmsg(db.get());
+            error_code = "STORAGE_UNAVAILABLE";
+            rollback();
+            return false;
+        }
+    }
+
     if (!execSql(db.get(), "COMMIT;", error)) {
         error_code = "STORAGE_UNAVAILABLE";
         rollback();
@@ -1340,7 +1615,7 @@ bool CameraTaskRepository::listAlerts(
     bindText(statement.get(), 2, event_type);
     bindText(statement.get(), 3, event_type);
     sqlite3_bind_int(statement.get(), 4, std::clamp(minimum_severity, 1, 5));
-    sqlite3_bind_int(statement.get(), 5, std::clamp(limit, 1, 200));
+    sqlite3_bind_int(statement.get(), 5, std::clamp(limit, 1, 1000));
     sqlite3_bind_int(statement.get(), 6, std::max(0, offset));
     int result = SQLITE_ROW;
     while ((result = sqlite3_step(statement.get())) == SQLITE_ROW) alerts.push_back(readAlert(statement.get()));

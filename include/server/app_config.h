@@ -196,6 +196,16 @@ namespace yolo11_server {
         };
     };
 
+    // People Flow -> Camera Run migration switches. Defaults deliberately keep
+    // the legacy runtime active so a deployment can roll back without changing
+    // its database or public API.
+    struct RuntimeSection {
+        bool unified_camera_pipeline = false;
+        bool people_flow_compatibility = true;
+        bool legacy_people_flow_fallback = true;
+        bool shadow_compare = false;
+    };
+
     struct CallbackProfileSection {
         bool enabled = true;
         // Endpoint and HMAC secret values are resolved only inside the Worker.
@@ -486,6 +496,7 @@ namespace yolo11_server {
         CameraHubSection camera_hub;
         CameraTasksSection camera_tasks;
         AnalysisSection analysis;
+        RuntimeSection runtime;
         CallbackDeliverySection callbacks;
         PeopleFlowSection people_flow;
         RedisSection redis;

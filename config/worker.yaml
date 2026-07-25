@@ -4,6 +4,13 @@ server:
   threads: 1
   enable_sync_detect: false
 
+runtime:
+  # Server and Worker must use the same value.
+  unified_camera_pipeline: false
+  people_flow_compatibility: true
+  legacy_people_flow_fallback: true
+  shadow_compare: false
+
 model:
   type: "pose"
   engine_path: "./engines/yolo11n-pose.engine"

@@ -79,6 +79,12 @@ public:
         bool& found,
         std::string& error
     ) const;
+    bool getRunByLegacySessionId(
+        const std::string& legacy_session_id,
+        CameraTaskRunRecord& run,
+        bool& found,
+        std::string& error
+    ) const;
     bool listRuns(
         const std::string& task_id,
         int limit,
