@@ -174,7 +174,10 @@ target_link_libraries(camera_task_runtime PUBLIC
     camera_capture_runtime camera_task_storage camera_task_redis
     spdlog::spdlog ${OpenCV_LIBS} Threads::Threads)
 
-add_library(camera_task_http STATIC src/server/camera_task_http_controller.cpp)
+add_library(camera_task_http STATIC
+    src/server/camera_task_http_controller.cpp
+    src/server/unified_camera_application_service.cpp
+)
 target_include_directories(camera_task_http PUBLIC "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(camera_task_http PUBLIC
     app_support camera_task_storage camera_task_redis Crow::Crow
