@@ -1,6 +1,6 @@
 # Unified Camera R0-R1 — contract baseline and application boundary
 
-> Status: implemented; disposable PostgreSQL verification pending
+> Status: complete; R2 entry gate satisfied
 > Date: 2026-07-25
 > Next gate: R2 immutable CameraRunSpec and additive schema
 
@@ -67,7 +67,7 @@ Command:
 powershell -ExecutionPolicy Bypass -File .\scripts\build_backend.ps1
 ```
 
-Observed result:
+Initial observed result:
 
 - configure and build succeeded;
 - `four_stage_server`, integration targets, and Camera HTTP contract target
@@ -76,6 +76,16 @@ Observed result:
 - 9 deterministic non-database tests passed;
 - 10 PostgreSQL/Redis-dependent tests skipped because
   `YOLO11_TEST_POSTGRES_DSN` and destructive-test opt-in were not configured.
+
+Full acceptance rerun used disposable PostgreSQL 17 and Redis 7 instances with
+destructive-test opt-in enabled. Observed result:
+
+- configure and build succeeded;
+- all 19/19 CTest cases executed;
+- 19 passed, 0 failed, 0 skipped;
+- Camera HTTP Golden responses, repository migrations, callback delivery,
+  frame retention, algorithm-service integration, Redis queue behavior, and
+  lease fencing all passed.
 
 Qt compatibility command:
 
@@ -88,9 +98,9 @@ Observed result:
 - passed;
 - all existing People Flow endpoint wiring remains present.
 
-## Residual verification requirement
+## Acceptance gate evidence
 
-Before R1 is accepted as complete in a release:
+R1 acceptance required:
 
 1. provide a disposable PostgreSQL database;
 2. set `YOLO11_TEST_POSTGRES_DSN`;
@@ -100,8 +110,10 @@ Before R1 is accepted as complete in a release:
    `algorithm_service_integration_test`, repository, callback, and frame tests
    to execute rather than skip.
 
-The current machine had no configured disposable PostgreSQL DSN and no running
-Docker daemon, so this requirement was recorded rather than bypassed.
+This requirement was completed on 2026-07-25 using disposable, volume-free
+PostgreSQL and Redis containers. The containers held test-only data and were
+removed after the run. The project owner authorized sequential progression to
+the next documented phase after publication of this checkpoint.
 
 ## Rollback
 
@@ -124,3 +136,8 @@ R2 may introduce `CameraRunSpec` and additive persistence only after:
 - start/stop Golden responses match the pre-refactor baseline;
 - reviewers approve the application-service boundary;
 - no People Flow runtime switch is bundled into the same change.
+
+Gate result: satisfied. The full disposable-database suite passed, the Camera
+HTTP contract suite preserved the Golden responses, the application-service
+boundary was accepted for sequential progression, and R0-R1 contains no
+People Flow runtime switch.
