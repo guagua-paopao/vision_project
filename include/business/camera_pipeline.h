@@ -24,6 +24,15 @@ struct CameraFrameJob {
     std::string algorithm_profile;
     std::vector<std::string> algorithms;
     std::string callback_profile;
+    std::string analysis_config_version;
+    double target_infer_fps = 5.0;
+    long long initial_occupancy = 0;
+    int snapshot_fps = 0;
+    std::string algorithm_parameters_json = "{}";
+    int reconnect_count = 0;
+    double capture_fps = 0.0;
+    double source_fps = 0.0;
+    long long latest_frame_age_ms = -1;
     SharedCameraFrame frame;
 };
 

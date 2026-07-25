@@ -484,6 +484,40 @@ bool CameraTaskQueue::updateRunStatus(const CameraTaskRunHotStatus& status, std:
     return !replyError(expire.get(), context_, error);
 }
 
+bool CameraTaskQueue::updateAnalysisStatus(
+    const CameraTaskRunHotStatus& status,
+    std::string& error
+) {
+    if (!safeKeyPart(status.run_id) || !safeKeyPart(status.task_id)) {
+        error = "unsafe analysis status identifier";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!context_ && !connectLocked(error)) return false;
+    const std::string key = statusKey(status.run_id);
+    ReplyPtr reply(static_cast<redisReply*>(redisCommand(context_,
+        "HSET %s run_id %s task_id %s analysis_config_version %s infer_fps %.6f "
+        "last_inference_ms %.6f analysis_frame_count %lld initial_occupancy %lld "
+        "in_count %lld out_count %lld occupancy %lld live_persons %d "
+        "analysis_reconnect_count %d warmup_frames_remaining %d security_state_json %s "
+        "analysis_snapshot_relative_path %s analysis_storage_degraded %d "
+        "analysis_snapshot_degraded %d analysis_last_update_ms %lld",
+        key.c_str(), status.run_id.c_str(), status.task_id.c_str(),
+        status.analysis_config_version.c_str(), status.infer_fps,
+        status.last_inference_ms, status.analysis_frame_count,
+        status.initial_occupancy, status.in_count, status.out_count,
+        status.occupancy, status.live_persons, status.analysis_reconnect_count,
+        status.warmup_frames_remaining, status.security_state_json.c_str(),
+        status.analysis_snapshot_relative_path.c_str(),
+        status.analysis_storage_degraded ? 1 : 0,
+        status.analysis_snapshot_degraded ? 1 : 0,
+        status.analysis_last_update_ms)));
+    if (replyError(reply.get(), context_, error)) return false;
+    ReplyPtr expire(static_cast<redisReply*>(redisCommand(
+        context_, "EXPIRE %s %d", key.c_str(), camera_config_.status_ttl_seconds)));
+    return !replyError(expire.get(), context_, error);
+}
+
 bool CameraTaskQueue::getRunStatus(
     const std::string& run_id,
     CameraTaskRunHotStatus& status,
@@ -525,6 +559,29 @@ bool CameraTaskQueue::getRunStatus(
     status.last_source_sequence = static_cast<unsigned long long>(parseLongLong(get("last_source_sequence")));
     status.last_frame_time_ms = parseLongLong(get("last_frame_time_ms"));
     status.writer_queue_depth = static_cast<int>(parseLongLong(get("writer_queue_depth")));
+    status.analysis_config_version = get("analysis_config_version");
+    status.infer_fps = parseDouble(get("infer_fps"));
+    status.last_inference_ms = parseDouble(get("last_inference_ms"));
+    status.analysis_frame_count = parseLongLong(get("analysis_frame_count"));
+    status.initial_occupancy = parseLongLong(get("initial_occupancy"));
+    status.in_count = parseLongLong(get("in_count"));
+    status.out_count = parseLongLong(get("out_count"));
+    status.occupancy = parseLongLong(get("occupancy"));
+    status.live_persons = static_cast<int>(parseLongLong(get("live_persons")));
+    status.analysis_reconnect_count =
+        static_cast<int>(parseLongLong(get("analysis_reconnect_count")));
+    status.warmup_frames_remaining =
+        static_cast<int>(parseLongLong(get("warmup_frames_remaining")));
+    status.security_state_json = get("security_state_json");
+    if (status.security_state_json.empty()) status.security_state_json = "{}";
+    status.analysis_snapshot_relative_path =
+        get("analysis_snapshot_relative_path");
+    status.analysis_storage_degraded =
+        parseLongLong(get("analysis_storage_degraded")) != 0;
+    status.analysis_snapshot_degraded =
+        parseLongLong(get("analysis_snapshot_degraded")) != 0;
+    status.analysis_last_update_ms =
+        parseLongLong(get("analysis_last_update_ms"));
     return true;
 }
 

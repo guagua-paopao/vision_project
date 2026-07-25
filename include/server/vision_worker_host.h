@@ -21,6 +21,7 @@ class CameraAlgorithmProcessor;
 class CameraInferencePool;
 class CallbackDeliveryWorker;
 class ICameraFrameJobSink;
+class CameraTaskQueue;
 
 using CameraTaskManagerFactory = std::function<std::unique_ptr<CameraTaskManager>(
     std::shared_ptr<SharedCameraFrameHubRegistry> hub_registry,
@@ -60,6 +61,7 @@ private:
     std::unique_ptr<PeopleFlowInferenceWorker> people_flow_worker_;
     std::shared_ptr<CameraTaskRepository> camera_repository_;
     std::shared_ptr<CameraAlgorithmProcessor> camera_algorithm_processor_;
+    std::shared_ptr<CameraTaskQueue> camera_analysis_status_queue_;
     std::shared_ptr<CameraInferencePool> camera_inference_pool_;
     std::unique_ptr<CallbackDeliveryWorker> callback_delivery_worker_;
     std::unique_ptr<CameraTaskManager> camera_task_manager_;

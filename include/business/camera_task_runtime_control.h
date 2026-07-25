@@ -33,4 +33,12 @@ public:
     virtual bool updateHubStatus(const CameraHubStatus& status, std::string& error) = 0;
 };
 
+class ICameraAnalysisStatusSink {
+public:
+    virtual ~ICameraAnalysisStatusSink() = default;
+    virtual bool updateAnalysisStatus(
+        const CameraTaskRunHotStatus& status,
+        std::string& error) = 0;
+};
+
 }  // namespace yolo11_server

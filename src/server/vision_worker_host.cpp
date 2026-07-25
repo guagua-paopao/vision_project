@@ -10,6 +10,7 @@
 #include "server/callback_delivery_worker.h"
 #include "server/camera_algorithm_processor.h"
 #include "server/camera_inference_pool.h"
+#include "server/camera_task_queue.h"
 #include "server/model_runner.h"
 #include "server/people_flow_inference_worker.h"
 #include "server/rtsp_camera_frame_source.h"
@@ -77,10 +78,15 @@ bool VisionWorkerHost::start(std::string& error) {
     }
 
     if (config_.camera_tasks.enabled && config_.analysis.enabled) {
+        camera_analysis_status_queue_ = std::make_shared<CameraTaskQueue>(
+            config_.redis,
+            config_.camera_tasks,
+            people_flow_consumer_name_ + "_camera_analysis");
         camera_algorithm_processor_ = std::make_shared<CameraAlgorithmProcessor>(
-            config_, camera_repository_);
+            config_, camera_repository_, camera_analysis_status_queue_);
         if (!camera_algorithm_processor_->start(error)) {
             camera_algorithm_processor_.reset();
+            camera_analysis_status_queue_.reset();
             camera_repository_.reset();
             people_flow_worker_->stop();
             people_flow_worker_.reset();
@@ -98,6 +104,7 @@ bool VisionWorkerHost::start(std::string& error) {
             camera_inference_pool_.reset();
             camera_algorithm_processor_->stop();
             camera_algorithm_processor_.reset();
+            camera_analysis_status_queue_.reset();
             camera_repository_.reset();
             people_flow_worker_->stop();
             people_flow_worker_.reset();
@@ -118,6 +125,7 @@ bool VisionWorkerHost::start(std::string& error) {
             camera_inference_pool_.reset();
             if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
             camera_algorithm_processor_.reset();
+            camera_analysis_status_queue_.reset();
             camera_repository_.reset();
             people_flow_worker_->stop();
             people_flow_worker_.reset();
@@ -135,6 +143,7 @@ bool VisionWorkerHost::start(std::string& error) {
             camera_inference_pool_.reset();
             if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
             camera_algorithm_processor_.reset();
+            camera_analysis_status_queue_.reset();
             if (callback_delivery_worker_) callback_delivery_worker_->stop();
             callback_delivery_worker_.reset();
             camera_repository_.reset();
@@ -154,6 +163,7 @@ bool VisionWorkerHost::start(std::string& error) {
             camera_inference_pool_.reset();
             if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
             camera_algorithm_processor_.reset();
+            camera_analysis_status_queue_.reset();
             if (callback_delivery_worker_) callback_delivery_worker_->stop();
             callback_delivery_worker_.reset();
             camera_repository_.reset();
@@ -190,6 +200,7 @@ void VisionWorkerHost::stop() noexcept {
         camera_task_manager_.reset();
         camera_inference_pool_.reset();
         camera_algorithm_processor_.reset();
+        camera_analysis_status_queue_.reset();
         callback_delivery_worker_.reset();
         camera_repository_.reset();
         people_flow_worker_.reset();

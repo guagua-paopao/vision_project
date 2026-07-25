@@ -176,8 +176,52 @@ int main() {
         "missing R2 fields must receive backward-compatible defaults");
     require(command_queue.acknowledge(legacy_received.message_id, error),
         "legacy command must acknowledge");
+
+    CameraTaskRunHotStatus pipeline_status;
+    pipeline_status.run_id = "cr_r3_status";
+    pipeline_status.task_id = "camera_r3";
+    pipeline_status.status = "running";
+    pipeline_status.camera_profile = "entry_camera_01";
+    pipeline_status.pipeline_thread_running = true;
+    pipeline_status.sampled_frames = 17;
+    pipeline_status.last_update_ms = 1774412345000LL;
+    require(command_queue.updateRunStatus(pipeline_status, error),
+        "pipeline status fields must publish");
+    CameraTaskRunHotStatus analysis_status;
+    analysis_status.run_id = pipeline_status.run_id;
+    analysis_status.task_id = pipeline_status.task_id;
+    analysis_status.analysis_config_version = "entry-line-v3";
+    analysis_status.infer_fps = 6.5;
+    analysis_status.analysis_frame_count = 11;
+    analysis_status.initial_occupancy = 4;
+    analysis_status.in_count = 3;
+    analysis_status.out_count = 1;
+    analysis_status.occupancy = 6;
+    analysis_status.live_persons = 2;
+    analysis_status.analysis_reconnect_count = 1;
+    analysis_status.security_state_json =
+        R"({"stages":{"phase1":{"ready":true},"phase2":{"ready":true},"phase3":{"ready":true},"phase4":{"ready":true}}})";
+    analysis_status.analysis_snapshot_relative_path =
+        "camera_r3/cr_r3_status/analysis/latest.jpg";
+    analysis_status.analysis_last_update_ms = 1774412345100LL;
+    require(command_queue.updateAnalysisStatus(analysis_status, error),
+        "analysis status fields must publish independently");
+    CameraTaskRunHotStatus merged_status;
+    require(command_queue.getRunStatus(
+            pipeline_status.run_id, merged_status, error) &&
+            merged_status.found &&
+            merged_status.pipeline_thread_running &&
+            merged_status.sampled_frames == 17 &&
+            merged_status.analysis_config_version == "entry-line-v3" &&
+            merged_status.analysis_frame_count == 11 &&
+            merged_status.occupancy == 6 &&
+            merged_status.analysis_snapshot_relative_path ==
+                analysis_status.analysis_snapshot_relative_path,
+        "pipeline and analysis writers must merge without overwriting each other");
+
     auto* cleanup = static_cast<redisReply*>(redisCommand(
-        raw, "DEL %s", command_config.command_stream_key.c_str()));
+        raw, "DEL %s %s", command_config.command_stream_key.c_str(),
+        ("yolo:camera-task:run:" + pipeline_status.run_id + ":status").c_str()));
     require(cleanup != nullptr && cleanup->type != REDIS_REPLY_ERROR,
         "temporary command stream must be removed");
     freeReplyObject(cleanup);
