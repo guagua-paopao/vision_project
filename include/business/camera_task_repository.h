@@ -100,6 +100,16 @@ public:
         int& recovered_count,
         std::string& error
     ) const;
+    bool upsertRunAnalysisResult(
+        const CameraRunAnalysisResultRecord& result,
+        std::string& error
+    ) const;
+    bool getRunAnalysisResult(
+        const std::string& run_id,
+        CameraRunAnalysisResultRecord& result,
+        bool& found,
+        std::string& error
+    ) const;
 
     bool insertFrame(const CameraFrameArtifact& frame, std::string& error) const;
     bool getLatestFrame(

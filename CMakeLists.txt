@@ -136,6 +136,11 @@ add_library(camera_task_scheduling STATIC src/server/camera_task_manager.cpp)
 target_include_directories(camera_task_scheduling PUBLIC "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(camera_task_scheduling PUBLIC spdlog::spdlog Threads::Threads)
 
+add_library(camera_run_contract STATIC src/server/camera_run_spec.cpp)
+target_include_directories(camera_run_contract PUBLIC "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(camera_run_contract PUBLIC
+    camera_task_scheduling nlohmann_json::nlohmann_json)
+
 add_library(camera_inference_pool STATIC src/server/camera_inference_pool.cpp)
 target_include_directories(camera_inference_pool PUBLIC "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(camera_inference_pool PUBLIC
@@ -171,7 +176,7 @@ add_library(camera_task_runtime STATIC
 )
 target_include_directories(camera_task_runtime PUBLIC "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(camera_task_runtime PUBLIC
-    camera_capture_runtime camera_task_storage camera_task_redis
+    camera_capture_runtime camera_task_storage camera_task_redis camera_run_contract
     spdlog::spdlog ${OpenCV_LIBS} Threads::Threads)
 
 add_library(camera_task_http STATIC
@@ -180,7 +185,7 @@ add_library(camera_task_http STATIC
 )
 target_include_directories(camera_task_http PUBLIC "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(camera_task_http PUBLIC
-    app_support camera_task_storage camera_task_redis Crow::Crow
+    app_support camera_task_storage camera_task_redis camera_run_contract Crow::Crow
     nlohmann_json::nlohmann_json OpenSSL::Crypto)
 
 add_library(people_flow_redis STATIC src/server/redis_task_queue.cpp)
@@ -257,6 +262,11 @@ target_include_directories(camera_task_manager_test PRIVATE "${PROJECT_INCLUDE_D
 target_link_libraries(camera_task_manager_test PRIVATE camera_task_scheduling)
 add_test(NAME camera_task_manager_test COMMAND camera_task_manager_test)
 
+add_executable(camera_run_spec_test tests/camera_run_spec_test.cpp)
+target_include_directories(camera_run_spec_test PRIVATE "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(camera_run_spec_test PRIVATE camera_run_contract)
+add_test(NAME camera_run_spec_test COMMAND camera_run_spec_test)
+
 add_executable(camera_inference_pool_test tests/camera_inference_pool_test.cpp)
 target_include_directories(camera_inference_pool_test PRIVATE "${PROJECT_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(camera_inference_pool_test PRIVATE camera_inference_pool ${OpenCV_LIBS})
@@ -325,6 +335,8 @@ set_tests_properties(algorithm_service_integration_test PROPERTIES
 add_executable(camera_task_repository_test tests/camera_task_repository_test.cpp)
 target_include_directories(camera_task_repository_test PRIVATE "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(camera_task_repository_test PRIVATE camera_task_storage)
+target_compile_definitions(camera_task_repository_test PRIVATE
+    YOLO11_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 add_test(NAME camera_task_repository_test COMMAND camera_task_repository_test)
 set_tests_properties(camera_task_repository_test PROPERTIES SKIP_RETURN_CODE 77)
 

@@ -224,6 +224,17 @@ bool CameraTaskQueue::fillCommand(void* opaque, CameraTaskCommand& command, std:
     }
     command.callback_profile = get("callback_profile");
     command.create_time_ms = parseLongLong(get("create_time_ms"));
+    command.origin = get("origin");
+    if (command.origin.empty()) command.origin = "camera_api";
+    command.analysis_config_version = get("analysis_config_version");
+    command.initial_occupancy = parseLongLong(get("initial_occupancy"));
+    command.snapshot_fps = static_cast<int>(parseLongLong(get("snapshot_fps")));
+    command.algorithm_parameters_json = get("algorithm_parameters_json");
+    if (command.algorithm_parameters_json.empty()) command.algorithm_parameters_json = "{}";
+    command.legacy_session_id = get("legacy_session_id");
+    command.preserve_pf_projection = parseLongLong(get("preserve_pf_projection")) != 0;
+    command.legacy_response_version =
+        static_cast<int>(parseLongLong(get("legacy_response_version")));
     return !command.message_id.empty();
 }
 
@@ -310,24 +321,32 @@ void CameraTaskQueue::interrupt() noexcept {
 
 bool CameraTaskQueue::submitStart(const CameraTaskCommand& command, std::string& error) {
     if (!safeKeyPart(command.task_id) || !safeKeyPart(command.run_id) ||
-        !safeKeyPart(command.camera_profile)) {
+        !safeKeyPart(command.camera_profile) || !safeKeyPart(command.origin) ||
+        (!command.legacy_session_id.empty() && !safeKeyPart(command.legacy_session_id))) {
         error = "camera command contains an unsafe identifier";
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
     if (!context_ && (!connectLocked(error) || !ensureGroupLocked(error))) return false;
     ReplyPtr reply(static_cast<redisReply*>(redisCommand(context_,
-        "XADD %s * command_kind camera_frame_start command_version 2 task_id %s run_id %s "
+        "XADD %s * command_kind camera_frame_start command_version 3 task_id %s run_id %s "
         "definition_version %d camera_profile %s frame_interval_ms %d output_mode %s jpeg_quality %d "
         "max_width %d max_height %d retention_days %d max_saved_frames %d analysis_enabled %d "
-        "target_infer_fps %.8g algorithm_profile %s algorithms_json %s callback_profile %s create_time_ms %lld",
+        "target_infer_fps %.8g algorithm_profile %s algorithms_json %s callback_profile %s create_time_ms %lld "
+        "origin %s analysis_config_version %s initial_occupancy %lld snapshot_fps %d "
+        "algorithm_parameters_json %s legacy_session_id %s preserve_pf_projection %d "
+        "legacy_response_version %d",
         camera_config_.command_stream_key.c_str(), command.task_id.c_str(), command.run_id.c_str(),
         command.definition_version, command.camera_profile.c_str(), command.frame_interval_ms,
         command.output_mode.c_str(), command.jpeg_quality, command.max_width, command.max_height,
         command.retention_days, command.max_saved_frames, command.analysis_enabled ? 1 : 0,
         command.target_infer_fps, command.algorithm_profile.c_str(),
         json(command.algorithms).dump().c_str(), command.callback_profile.c_str(),
-        command.create_time_ms > 0 ? command.create_time_ms : nowMs())));
+        command.create_time_ms > 0 ? command.create_time_ms : nowMs(),
+        command.origin.c_str(), command.analysis_config_version.c_str(),
+        command.initial_occupancy, command.snapshot_fps,
+        command.algorithm_parameters_json.c_str(), command.legacy_session_id.c_str(),
+        command.preserve_pf_projection ? 1 : 0, command.legacy_response_version)));
     return !replyError(reply.get(), context_, error);
 }
 
