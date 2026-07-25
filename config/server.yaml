@@ -5,6 +5,13 @@ server:
   enable_sync_detect: false
   max_body_size_mb: 2
 
+runtime:
+  # R4 is opt-in. false restores the legacy People Flow Worker.
+  unified_camera_pipeline: false
+  people_flow_compatibility: true
+  legacy_people_flow_fallback: true
+  shadow_compare: false
+
 model:
   type: "pose"
   engine_path: "./engines/yolo11n-pose.engine"

@@ -7,6 +7,7 @@
 #include "business/camera_task_repository.h"
 #include "server/app_config.h"
 #include "server/camera_profile_registry.h"
+#include "server/camera_run_spec.h"
 #include "server/camera_task_api_control.h"
 
 namespace yolo11_server {
@@ -33,6 +34,12 @@ struct CameraStopApplicationResult {
     std::string status;
     bool idempotent_replay = false;
     CameraApplicationFailure failure = CameraApplicationFailure::none;
+};
+
+struct CameraStartApplicationOptions {
+    std::string run_id;
+    CameraRunSpecOptions run_spec;
+    bool override_run_spec = false;
 };
 
 // Application boundary shared by the canonical Camera HTTP API and, in the
@@ -63,7 +70,8 @@ public:
         CameraStartApplicationResult& result,
         std::string& error_code,
         std::string& error,
-        long long operation_time_ms = 0
+        long long operation_time_ms = 0,
+        CameraStartApplicationOptions options = {}
     );
 
     bool stopCamera(

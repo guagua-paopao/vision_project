@@ -113,15 +113,30 @@ json sessionJson(const PeopleFlowSessionStatus& item) {
 PeopleFlowHttpServer::PeopleFlowHttpServer(const AppConfig& config)
     : config_(config), redis_(config.redis) {
     if (config_.camera_tasks.enabled) {
+        camera_task_repository_ =
+            std::make_shared<CameraTaskRepository>(config_.camera_tasks);
+        camera_task_control_ = std::make_shared<CameraTaskQueue>(
+            config_.redis, config_.camera_tasks, "camera_task_http");
+        if (!config_.stream.camera_profiles_path.empty()) {
+            camera_profile_registry_ = std::make_shared<CameraProfileRegistry>(
+                config_.stream.camera_profiles_path);
+        }
+        unified_camera_application_service_ =
+            std::make_shared<UnifiedCameraApplicationService>(
+                config_,
+                camera_task_repository_,
+                camera_task_control_,
+                camera_profile_registry_);
         camera_task_controller_ = std::make_unique<CameraTaskHttpController>(
             config_,
-            std::shared_ptr<CameraTaskRepository>{},
-            std::shared_ptr<ICameraTaskApiControl>{},
+            camera_task_repository_,
+            camera_task_control_,
             std::string{},
-            std::shared_ptr<CameraProfileRegistry>{},
+            camera_profile_registry_,
             [this](AlgorithmRuntimeSnapshot& runtime, std::string& error) {
                 return readAlgorithmRuntime(runtime, error);
-            });
+            },
+            unified_camera_application_service_);
     }
 }
 
@@ -144,6 +159,24 @@ bool PeopleFlowHttpServer::initialize(std::string& error) {
         spdlog::warn("PostgreSQL query layer starts degraded: {}", storage_error);
     }
     if (camera_task_controller_ && !camera_task_controller_->initialize(error)) return false;
+    if (config_.runtime.unified_camera_pipeline &&
+        config_.runtime.people_flow_compatibility) {
+        if (!camera_task_controller_ || !camera_task_repository_ ||
+            !camera_task_control_ ||
+            !unified_camera_application_service_) {
+            error =
+                "unified People Flow compatibility requires camera_tasks.enabled";
+            return false;
+        }
+        people_flow_compatibility_controller_ =
+            std::make_unique<PeopleFlowCompatibilityController>(
+                config_,
+                camera_task_repository_,
+                camera_task_control_,
+                camera_profile_registry_,
+                unified_camera_application_service_,
+                repository_.get());
+    }
     return true;
 }
 
@@ -341,6 +374,9 @@ crow::response PeopleFlowHttpServer::start(const crow::request& request) {
     if (!authorized(request)) {
         return jsonResponse(401, {{"success", false}, {"error_code", "UNAUTHORIZED"}});
     }
+    if (people_flow_compatibility_controller_) {
+        return people_flow_compatibility_controller_->start(request);
+    }
     const auto max_bytes = static_cast<std::size_t>(std::max(1, config_.server.max_body_size_mb)) * 1024U * 1024U;
     if (request.body.size() > max_bytes) {
         return jsonResponse(413, {{"success", false}, {"error_code", "REQUEST_TOO_LARGE"}});
@@ -426,6 +462,14 @@ crow::response PeopleFlowHttpServer::stop(
     if (!authorized(request)) {
         return jsonResponse(401, {{"success", false}, {"error_code", "UNAUTHORIZED"}});
     }
+    if (people_flow_compatibility_controller_) {
+        auto response =
+            people_flow_compatibility_controller_->stop(session_id);
+        if (response.code != 404 ||
+            !config_.runtime.legacy_people_flow_fallback) {
+            return response;
+        }
+    }
     if (!safeIdentifier(session_id) || session_id.rfind("pf_", 0) != 0) {
         return jsonResponse(400, {{"success", false}, {"error_code", "INVALID_SESSION_ID"}});
     }
@@ -448,6 +492,14 @@ crow::response PeopleFlowHttpServer::stop(
 }
 
 crow::response PeopleFlowHttpServer::status(const std::string& session_id) const {
+    if (people_flow_compatibility_controller_) {
+        auto response =
+            people_flow_compatibility_controller_->status(session_id);
+        if (response.code != 404 ||
+            !config_.runtime.legacy_people_flow_fallback) {
+            return response;
+        }
+    }
     if (!safeIdentifier(session_id)) return jsonResponse(400, {{"success", false}, {"error_code", "INVALID_SESSION_ID"}});
     PeopleFlowSessionStatus item;
     std::string error;
@@ -459,6 +511,14 @@ crow::response PeopleFlowHttpServer::status(const std::string& session_id) const
 }
 
 crow::response PeopleFlowHttpServer::snapshot(const std::string& session_id) const {
+    if (people_flow_compatibility_controller_) {
+        auto response =
+            people_flow_compatibility_controller_->snapshot(session_id);
+        if (response.code != 404 ||
+            !config_.runtime.legacy_people_flow_fallback) {
+            return response;
+        }
+    }
     PeopleFlowSessionStatus item;
     std::string error;
     if (!safeIdentifier(session_id) || !redis_.getPeopleFlowSession(session_id, item, error)) {
@@ -476,6 +536,14 @@ crow::response PeopleFlowHttpServer::snapshot(const std::string& session_id) con
 }
 
 crow::response PeopleFlowHttpServer::security(const std::string& session_id) const {
+    if (people_flow_compatibility_controller_) {
+        auto response =
+            people_flow_compatibility_controller_->security(session_id);
+        if (response.code != 404 ||
+            !config_.runtime.legacy_people_flow_fallback) {
+            return response;
+        }
+    }
     PeopleFlowSessionStatus item;
     std::string error;
     if (!safeIdentifier(session_id) || !redis_.getPeopleFlowSession(session_id, item, error)) {
@@ -495,6 +563,14 @@ crow::response PeopleFlowHttpServer::security(const std::string& session_id) con
 }
 
 crow::response PeopleFlowHttpServer::realtime(const std::string& camera_id) const {
+    if (people_flow_compatibility_controller_) {
+        auto response =
+            people_flow_compatibility_controller_->realtime(camera_id);
+        if (response.code != 404 ||
+            !config_.runtime.legacy_people_flow_fallback) {
+            return response;
+        }
+    }
     if (!safeIdentifier(camera_id)) return jsonResponse(400, {{"success", false}, {"error_code", "INVALID_CAMERA_ID"}});
     PeopleFlowSessionStatus item;
     std::string error;
@@ -516,6 +592,10 @@ crow::response PeopleFlowHttpServer::events(
     const crow::request& request,
     const std::string& camera_id
 ) const {
+    if (people_flow_compatibility_controller_) {
+        return people_flow_compatibility_controller_->events(
+            request, camera_id);
+    }
     if (!safeIdentifier(camera_id) || !repository_) {
         return jsonResponse(400, {{"success", false}, {"error_code", "INVALID_CAMERA_ID"}});
     }

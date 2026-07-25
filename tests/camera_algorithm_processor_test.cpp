@@ -37,6 +37,11 @@ long long nowMs() {
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+std::string pathUtf8(const std::filesystem::path& path) {
+    const auto encoded = path.generic_u8string();
+    return std::string(encoded.begin(), encoded.end());
+}
+
 Detection modelDetection(
     float x,
     float y,
@@ -117,7 +122,7 @@ int main() {
     config.camera_tasks.postgres_dsn_env = "YOLO11_TEST_POSTGRES_DSN";
     const auto output_root = std::filesystem::temp_directory_path() /
         ("camera_r3_analysis_" + std::to_string(stamp));
-    config.camera_tasks.output_dir = output_root.string();
+    config.camera_tasks.output_dir = pathUtf8(output_root);
     config.people_flow.config_version = "algorithm-test-v1";
     config.people_flow.warmup_frames_after_reconnect = 1;
     config.people_flow.roi.enabled = false;

@@ -195,13 +195,23 @@ if(WIN32)
     target_link_libraries(people_flow_redis PUBLIC ws2_32)
 endif()
 
+add_library(people_flow_compat_http STATIC
+    src/server/people_flow_compatibility_controller.cpp
+)
+target_include_directories(people_flow_compat_http PUBLIC
+    "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(people_flow_compat_http PUBLIC
+    app_support camera_task_http people_flow_storage Crow::Crow
+    nlohmann_json::nlohmann_json)
+
 add_executable(four_stage_server
     src/server/main_server.cpp
     src/server/people_flow_http_server.cpp
 )
 target_include_directories(four_stage_server PRIVATE "${PROJECT_INCLUDE_DIR}")
 target_link_libraries(four_stage_server PRIVATE
-    app_support camera_task_http people_flow_redis people_flow_storage
+    app_support camera_task_http people_flow_compat_http
+    people_flow_redis people_flow_storage
     Crow::Crow nlohmann_json::nlohmann_json spdlog::spdlog)
 
 add_executable(four_stage_worker
@@ -363,6 +373,18 @@ target_link_libraries(camera_task_http_contract_test PRIVATE
     camera_task_http nlohmann_json::nlohmann_json)
 add_test(NAME camera_task_http_contract_test COMMAND camera_task_http_contract_test)
 set_tests_properties(camera_task_http_contract_test PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(people_flow_compatibility_contract_test
+    tests/people_flow_compatibility_contract_test.cpp
+)
+target_include_directories(people_flow_compatibility_contract_test PRIVATE
+    "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(people_flow_compatibility_contract_test PRIVATE
+    people_flow_compat_http nlohmann_json::nlohmann_json)
+add_test(NAME people_flow_compatibility_contract_test
+    COMMAND people_flow_compatibility_contract_test)
+set_tests_properties(people_flow_compatibility_contract_test PROPERTIES
+    SKIP_RETURN_CODE 77)
 
 # Hardware smoke target; intentionally not part of CTest so CI without an
 # NVIDIA GPU can still run all deterministic tests.

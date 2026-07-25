@@ -458,6 +458,19 @@ namespace yolo11_server {
                 config.analysis.supported_algorithms.end()),
             config.analysis.supported_algorithms.end());
 
+        const auto runtime = root["runtime"];
+        config.runtime.unified_camera_pipeline = readOrDefault<bool>(
+            runtime, "unified_camera_pipeline",
+            config.runtime.unified_camera_pipeline);
+        config.runtime.people_flow_compatibility = readOrDefault<bool>(
+            runtime, "people_flow_compatibility",
+            config.runtime.people_flow_compatibility);
+        config.runtime.legacy_people_flow_fallback = readOrDefault<bool>(
+            runtime, "legacy_people_flow_fallback",
+            config.runtime.legacy_people_flow_fallback);
+        config.runtime.shadow_compare = readOrDefault<bool>(
+            runtime, "shadow_compare", config.runtime.shadow_compare);
+
         const auto callbacks = root["callbacks"];
         config.callbacks.enabled = readOrDefault<bool>(
             callbacks, "enabled", config.callbacks.enabled);

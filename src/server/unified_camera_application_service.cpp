@@ -104,7 +104,8 @@ bool UnifiedCameraApplicationService::startCamera(
     CameraStartApplicationResult& result,
     std::string& error_code,
     std::string& error,
-    long long operation_time_ms
+    long long operation_time_ms,
+    CameraStartApplicationOptions options
 ) {
     auto lifecycle_lock = lockLifecycle();
     result = CameraStartApplicationResult{};
@@ -198,7 +199,12 @@ bool UnifiedCameraApplicationService::startCamera(
         return true;
     }
 
-    const auto spec = cameraApiRunSpec(config_, task, makeRunId(), now_ms);
+    const std::string run_id =
+        options.run_id.empty() ? makeRunId() : std::move(options.run_id);
+    const auto spec = options.override_run_spec
+        ? makeCameraRunSpec(
+            task, run_id, now_ms, std::move(options.run_spec))
+        : cameraApiRunSpec(config_, task, run_id, now_ms);
     CameraTaskRunRecord run = spec.toRunRecord();
 
     std::string repository_code;
