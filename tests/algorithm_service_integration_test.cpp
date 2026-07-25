@@ -272,7 +272,7 @@ int main() {
         "test PostgreSQL connection must open: " + error);
     require(database.exec(
         "DROP TABLE IF EXISTS callback_outbox,security_alert_events,"
-        "camera_idempotency_keys,camera_frames,camera_task_runs,camera_tasks,"
+        "camera_idempotency_keys,camera_frames,camera_run_analysis_results,camera_task_runs,camera_tasks,"
         "camera_schema_version CASCADE;",
         error),
         "P5 integration schema reset must succeed: " + error);

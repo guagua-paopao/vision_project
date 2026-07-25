@@ -6,13 +6,11 @@
 #include <utility>
 #include <vector>
 
-#include <nlohmann/json.hpp>
+#include "server/camera_run_spec.h"
 
 namespace yolo11_server {
 
 namespace {
-
-using json = nlohmann::json;
 
 long long wallNowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -30,50 +28,21 @@ std::string makeRunId() {
     return output.str();
 }
 
-std::string definitionJson(const CameraTaskDefinition& task) {
-    return json({
-        {"camera_profile", task.camera_profile},
-        {"frame_interval_ms", task.frame_interval_ms},
-        {"output_mode", task.output_mode},
-        {"jpeg_quality", task.jpeg_quality},
-        {"max_width", task.max_width},
-        {"max_height", task.max_height},
-        {"retention_days", task.retention_days},
-        {"max_saved_frames", task.max_saved_frames},
-        {"desired_state", task.desired_state},
-        {"analysis", {
-            {"enabled", task.analysis_enabled},
-            {"target_infer_fps", task.target_infer_fps},
-            {"algorithm_profile", task.algorithm_profile},
-            {"algorithms", task.algorithms}
-        }},
-        {"callback_profile", task.callback_profile}
-    }).dump();
-}
-
-CameraTaskCommand commandFrom(
+CameraRunSpec cameraApiRunSpec(
+    const AppConfig& config,
     const CameraTaskDefinition& task,
-    const CameraTaskRunRecord& run
+    std::string run_id,
+    long long create_time_ms
 ) {
-    CameraTaskCommand command;
-    command.task_id = task.task_id;
-    command.run_id = run.run_id;
-    command.camera_profile = task.camera_profile;
-    command.definition_version = task.version;
-    command.frame_interval_ms = task.frame_interval_ms;
-    command.output_mode = task.output_mode;
-    command.jpeg_quality = task.jpeg_quality;
-    command.max_width = task.max_width;
-    command.max_height = task.max_height;
-    command.retention_days = task.retention_days;
-    command.max_saved_frames = task.max_saved_frames;
-    command.analysis_enabled = task.analysis_enabled;
-    command.target_infer_fps = task.target_infer_fps;
-    command.algorithm_profile = task.algorithm_profile;
-    command.algorithms = task.algorithms;
-    command.callback_profile = task.callback_profile;
-    command.create_time_ms = run.create_time_ms;
-    return command;
+    CameraRunSpecOptions options;
+    options.origin = kCameraRunOriginCameraApi;
+    options.analysis_config_version = config.people_flow.config_version.empty()
+        ? task.algorithm_profile
+        : config.people_flow.config_version;
+    options.initial_occupancy = config.people_flow.initial_occupancy;
+    options.snapshot_fps = config.people_flow.snapshot_fps;
+    return makeCameraRunSpec(
+        task, std::move(run_id), create_time_ms, std::move(options));
 }
 
 }  // namespace
@@ -229,15 +198,8 @@ bool UnifiedCameraApplicationService::startCamera(
         return true;
     }
 
-    CameraTaskRunRecord run;
-    run.run_id = makeRunId();
-    run.task_id = task.task_id;
-    run.definition_version = task.version;
-    run.definition_json = definitionJson(task);
-    run.status = "queued";
-    run.camera_profile = task.camera_profile;
-    run.create_time_ms = now_ms;
-    run.last_update_ms = now_ms;
+    const auto spec = cameraApiRunSpec(config_, task, makeRunId(), now_ms);
+    CameraTaskRunRecord run = spec.toRunRecord();
 
     std::string repository_code;
     if (!repository_->createRun(run, repository_code, error)) {
@@ -261,7 +223,7 @@ bool UnifiedCameraApplicationService::startCamera(
         return false;
     }
 
-    CameraTaskCommand command = commandFrom(task, run);
+    CameraTaskCommand command = spec.toStartCommand();
     if (!control_->submitStart(command, error)) {
         CameraTaskRunRecord failed = run;
         failed.status = "failed";

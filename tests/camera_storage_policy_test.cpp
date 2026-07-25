@@ -55,7 +55,7 @@ int main() {
     require(database.openFromEnvironment(config.postgres_dsn_env, error),
         "test PostgreSQL connection must open: " + error);
     require(database.exec(
-        "DROP TABLE IF EXISTS camera_frames,camera_task_runs,camera_tasks,camera_schema_version CASCADE;",
+        "DROP TABLE IF EXISTS camera_frames,camera_run_analysis_results,camera_task_runs,camera_tasks,camera_schema_version CASCADE;",
         error), "test PostgreSQL schema reset must succeed: " + error);
     auto repository = std::make_shared<CameraTaskRepository>(config);
     require(repository->initialize(error), "repository must initialize: " + error);

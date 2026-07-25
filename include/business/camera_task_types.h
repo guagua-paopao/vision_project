@@ -76,6 +76,25 @@ struct CameraTaskRunRecord {
     std::string stop_reason;
     std::string error_code;
     std::string error_message;
+    std::string origin = "camera_api";
+    std::string legacy_session_id;
+    std::string analysis_config_version;
+};
+
+struct CameraRunAnalysisResultRecord {
+    std::string run_id;
+    std::string task_id;
+    long long initial_occupancy = 0;
+    long long in_count = 0;
+    long long out_count = 0;
+    long long final_occupancy = 0;
+    int last_live_persons = 0;
+    std::string security_state_json = "{}";
+    std::string snapshot_relative_path;
+    bool storage_degraded = false;
+    bool snapshot_degraded = false;
+    long long last_update_ms = 0;
+    long long finalized_at_ms = 0;
 };
 
 struct CameraFrameArtifact {

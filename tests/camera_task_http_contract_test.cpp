@@ -142,7 +142,7 @@ int main() {
         "test PostgreSQL connection must open: " + error);
     require(database.exec(
         "DROP TABLE IF EXISTS callback_outbox,security_alert_events,camera_idempotency_keys,"
-        "camera_frames,camera_task_runs,camera_tasks,camera_schema_version CASCADE;",
+        "camera_frames,camera_run_analysis_results,camera_task_runs,camera_tasks,camera_schema_version CASCADE;",
         error), "test PostgreSQL schema reset must succeed: " + error);
 
     {
@@ -267,8 +267,15 @@ int main() {
             control->submitted.front().algorithm_profile == "security_default" &&
             control->submitted.front().algorithms ==
                 std::vector<std::string>({ "people_flow", "electronic_fence" }) &&
-            control->submitted.front().callback_profile == "backend_primary",
-        "the extraction command must carry the safe algorithm contract and contain no RTSP URI");
+            control->submitted.front().callback_profile == "backend_primary" &&
+            control->submitted.front().origin == "camera_api" &&
+            control->submitted.front().analysis_config_version ==
+                config.people_flow.config_version &&
+            control->submitted.front().initial_occupancy ==
+                config.people_flow.initial_occupancy &&
+            control->submitted.front().snapshot_fps ==
+                config.people_flow.snapshot_fps,
+        "the extraction command must carry the safe immutable RunSpec and contain no RTSP URI");
     response = controller.createTask(create_request);
     require(response.code == 202 &&
             response.get_header_value("X-Idempotent-Replay") == "true" &&

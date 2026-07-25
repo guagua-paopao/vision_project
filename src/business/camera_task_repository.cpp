@@ -116,11 +116,39 @@ CREATE TABLE IF NOT EXISTS camera_task_runs (
   error_code TEXT,
   error_message TEXT
 );
+ALTER TABLE camera_task_runs
+  ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'camera_api';
+ALTER TABLE camera_task_runs
+  ADD COLUMN IF NOT EXISTS legacy_session_id TEXT;
+ALTER TABLE camera_task_runs
+  ADD COLUMN IF NOT EXISTS analysis_config_version TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_camera_task_active_run
   ON camera_task_runs(task_id)
   WHERE status IN ('queued','starting','running','reconnecting');
 CREATE INDEX IF NOT EXISTS idx_camera_runs_task_time
   ON camera_task_runs(task_id, create_time_ms DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_camera_runs_legacy_session
+  ON camera_task_runs(legacy_session_id)
+  WHERE legacy_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_camera_runs_task_origin_time
+  ON camera_task_runs(task_id, origin, create_time_ms DESC);
+CREATE TABLE IF NOT EXISTS camera_run_analysis_results (
+  run_id TEXT PRIMARY KEY REFERENCES camera_task_runs(run_id),
+  task_id TEXT NOT NULL REFERENCES camera_tasks(task_id),
+  initial_occupancy BIGINT NOT NULL DEFAULT 0,
+  in_count BIGINT NOT NULL DEFAULT 0,
+  out_count BIGINT NOT NULL DEFAULT 0,
+  final_occupancy BIGINT NOT NULL DEFAULT 0,
+  last_live_persons INTEGER NOT NULL DEFAULT 0,
+  security_state_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  snapshot_relative_path TEXT,
+  storage_degraded SMALLINT NOT NULL DEFAULT 0 CHECK (storage_degraded IN (0,1)),
+  snapshot_degraded SMALLINT NOT NULL DEFAULT 0 CHECK (snapshot_degraded IN (0,1)),
+  last_update_ms BIGINT NOT NULL,
+  finalized_at_ms BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_camera_run_analysis_task_update
+  ON camera_run_analysis_results(task_id, last_update_ms DESC);
 CREATE TABLE IF NOT EXISTS camera_frames (
   frame_id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES camera_tasks(task_id),
@@ -195,6 +223,9 @@ CREATE INDEX IF NOT EXISTS idx_camera_idempotency_expiry
   ON camera_idempotency_keys(expires_at_ms);
 INSERT INTO camera_schema_version(version, applied_at_ms)
 VALUES(2, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
+ON CONFLICT(version) DO NOTHING;
+INSERT INTO camera_schema_version(version, applied_at_ms)
+VALUES(3, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
 ON CONFLICT(version) DO NOTHING;
 )SQL";
 }
@@ -337,7 +368,28 @@ CameraTaskRunRecord readRun(sqlite3_stmt* statement) {
     run.stop_reason = columnText(statement, 23);
     run.error_code = columnText(statement, 24);
     run.error_message = columnText(statement, 25);
+    run.origin = columnText(statement, 26);
+    run.legacy_session_id = columnText(statement, 27);
+    run.analysis_config_version = columnText(statement, 28);
     return run;
+}
+
+CameraRunAnalysisResultRecord readRunAnalysisResult(sqlite3_stmt* statement) {
+    CameraRunAnalysisResultRecord result;
+    result.run_id = columnText(statement, 0);
+    result.task_id = columnText(statement, 1);
+    result.initial_occupancy = sqlite3_column_int64(statement, 2);
+    result.in_count = sqlite3_column_int64(statement, 3);
+    result.out_count = sqlite3_column_int64(statement, 4);
+    result.final_occupancy = sqlite3_column_int64(statement, 5);
+    result.last_live_persons = sqlite3_column_int(statement, 6);
+    result.security_state_json = columnText(statement, 7);
+    result.snapshot_relative_path = columnText(statement, 8);
+    result.storage_degraded = sqlite3_column_int(statement, 9) != 0;
+    result.snapshot_degraded = sqlite3_column_int(statement, 10) != 0;
+    result.last_update_ms = sqlite3_column_int64(statement, 11);
+    result.finalized_at_ms = sqlite3_column_int64(statement, 12);
+    return result;
 }
 
 CameraFrameArtifact readFrame(sqlite3_stmt* statement) {
@@ -424,7 +476,15 @@ const char* runSelectSql() {
         "last_update_ms,COALESCE(worker_consumer,''),COALESCE(capture_backend,''),capture_fps,save_fps,"
         "consumed_frames,saved_frames,skipped_frames,dropped_frames,last_source_sequence,"
         "COALESCE(last_frame_time_ms,0),width,height,COALESCE(stop_reason,''),COALESCE(error_code,''),"
-        "COALESCE(error_message,'') FROM camera_task_runs";
+        "COALESCE(error_message,''),origin,COALESCE(legacy_session_id,''),"
+        "COALESCE(analysis_config_version,'') FROM camera_task_runs";
+}
+
+const char* runAnalysisResultSelectSql() {
+    return "SELECT run_id,task_id,initial_occupancy,in_count,out_count,final_occupancy,"
+        "last_live_persons,security_state_json::text,COALESCE(snapshot_relative_path,''),"
+        "storage_degraded,snapshot_degraded,last_update_ms,COALESCE(finalized_at_ms,0) "
+        "FROM camera_run_analysis_results";
 }
 
 const char* frameSelectSql() {
@@ -676,6 +736,15 @@ bool CameraTaskRepository::createRun(
         error = "camera run definition is incomplete";
         return false;
     }
+    if ((run.origin != "camera_api" && run.origin != "people_flow_compat") ||
+        (!run.legacy_session_id.empty() &&
+            !validServiceIdentifier(run.legacy_session_id, 160)) ||
+        (!run.analysis_config_version.empty() &&
+            !validServiceIdentifier(run.analysis_config_version, 160))) {
+        error_code = "INVALID_RUN_CONFIG";
+        error = "camera run unification metadata is invalid";
+        return false;
+    }
     CameraTaskDefinition task;
     bool found = false;
     if (!getTask(run.task_id, false, task, found, error)) return false;
@@ -699,7 +768,8 @@ bool CameraTaskRepository::createRun(
     StatementPtr statement;
     if (!prepare(db.get(),
         "INSERT INTO camera_task_runs(run_id,task_id,definition_version,definition_json,status,"
-        "camera_profile,create_time_ms,last_update_ms) VALUES(?,?,?,?,?,?,?,?);", statement, error)) return false;
+        "camera_profile,create_time_ms,last_update_ms,origin,legacy_session_id,"
+        "analysis_config_version) VALUES(?,?,?,?,?,?,?,?,?,?,?);", statement, error)) return false;
     bindText(statement.get(), 1, run.run_id);
     bindText(statement.get(), 2, run.task_id);
     sqlite3_bind_int(statement.get(), 3, run.definition_version);
@@ -708,6 +778,11 @@ bool CameraTaskRepository::createRun(
     bindText(statement.get(), 6, run.camera_profile);
     sqlite3_bind_int64(statement.get(), 7, run.create_time_ms);
     sqlite3_bind_int64(statement.get(), 8, run.last_update_ms);
+    bindText(statement.get(), 9, run.origin);
+    if (run.legacy_session_id.empty()) sqlite3_bind_null(statement.get(), 10);
+    else bindText(statement.get(), 10, run.legacy_session_id);
+    if (run.analysis_config_version.empty()) sqlite3_bind_null(statement.get(), 11);
+    else bindText(statement.get(), 11, run.analysis_config_version);
     if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
     error = sqlite3_errmsg(db.get());
     const int extended = sqlite3_extended_errcode(db.get());
@@ -878,6 +953,96 @@ bool CameraTaskRepository::recoverStaleRuns(
         return false;
     }
     recovered_count = sqlite3_changes(db.get());
+    return true;
+}
+
+bool CameraTaskRepository::upsertRunAnalysisResult(
+    const CameraRunAnalysisResultRecord& result,
+    std::string& error
+) const {
+    error.clear();
+    const auto security_state =
+        json::parse(result.security_state_json, nullptr, false);
+    if (result.run_id.empty() || result.task_id.empty() ||
+        result.initial_occupancy < 0 || result.in_count < 0 ||
+        result.out_count < 0 || result.final_occupancy < 0 ||
+        result.last_live_persons < 0 || result.last_update_ms <= 0 ||
+        !security_state.is_object()) {
+        error = "camera run analysis result is invalid";
+        return false;
+    }
+    CameraTaskRunRecord run;
+    bool found = false;
+    if (!getRun(result.run_id, run, found, error)) return false;
+    if (!found || run.task_id != result.task_id) {
+        error = "camera run analysis result does not match a Run";
+        return false;
+    }
+
+    DbPtr db;
+    if (!openDatabase(config_, db, error)) return false;
+    StatementPtr statement;
+    if (!prepare(db.get(),
+        "INSERT INTO camera_run_analysis_results("
+        "run_id,task_id,initial_occupancy,in_count,out_count,final_occupancy,"
+        "last_live_persons,security_state_json,snapshot_relative_path,"
+        "storage_degraded,snapshot_degraded,last_update_ms,finalized_at_ms) "
+        "VALUES(?,?,?,?,?,?,?,?::jsonb,?,?,?,?,?) "
+        "ON CONFLICT(run_id) DO UPDATE SET "
+        "initial_occupancy=excluded.initial_occupancy,in_count=excluded.in_count,"
+        "out_count=excluded.out_count,final_occupancy=excluded.final_occupancy,"
+        "last_live_persons=excluded.last_live_persons,"
+        "security_state_json=excluded.security_state_json,"
+        "snapshot_relative_path=excluded.snapshot_relative_path,"
+        "storage_degraded=excluded.storage_degraded,"
+        "snapshot_degraded=excluded.snapshot_degraded,"
+        "last_update_ms=excluded.last_update_ms,"
+        "finalized_at_ms=excluded.finalized_at_ms;",
+        statement, error)) {
+        return false;
+    }
+    bindText(statement.get(), 1, result.run_id);
+    bindText(statement.get(), 2, result.task_id);
+    sqlite3_bind_int64(statement.get(), 3, result.initial_occupancy);
+    sqlite3_bind_int64(statement.get(), 4, result.in_count);
+    sqlite3_bind_int64(statement.get(), 5, result.out_count);
+    sqlite3_bind_int64(statement.get(), 6, result.final_occupancy);
+    sqlite3_bind_int(statement.get(), 7, result.last_live_persons);
+    bindText(statement.get(), 8, security_state.dump());
+    if (result.snapshot_relative_path.empty()) sqlite3_bind_null(statement.get(), 9);
+    else bindText(statement.get(), 9, result.snapshot_relative_path);
+    sqlite3_bind_int(statement.get(), 10, result.storage_degraded ? 1 : 0);
+    sqlite3_bind_int(statement.get(), 11, result.snapshot_degraded ? 1 : 0);
+    sqlite3_bind_int64(statement.get(), 12, result.last_update_ms);
+    bindNullableInt64(statement.get(), 13, result.finalized_at_ms);
+    if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
+    error = sqlite3_errmsg(db.get());
+    return false;
+}
+
+bool CameraTaskRepository::getRunAnalysisResult(
+    const std::string& run_id,
+    CameraRunAnalysisResultRecord& result,
+    bool& found,
+    std::string& error
+) const {
+    found = false;
+    error.clear();
+    DbPtr db;
+    if (!openDatabase(config_, db, error)) return false;
+    const std::string sql =
+        std::string(runAnalysisResultSelectSql()) + " WHERE run_id=?;";
+    StatementPtr statement;
+    if (!prepare(db.get(), sql.c_str(), statement, error)) return false;
+    bindText(statement.get(), 1, run_id);
+    const int step = sqlite3_step(statement.get());
+    if (step == SQLITE_DONE) return true;
+    if (step != SQLITE_ROW) {
+        error = sqlite3_errmsg(db.get());
+        return false;
+    }
+    result = readRunAnalysisResult(statement.get());
+    found = true;
     return true;
 }
 

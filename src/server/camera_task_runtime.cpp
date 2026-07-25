@@ -7,20 +7,18 @@
 #include <utility>
 #include <vector>
 
-#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 #include "business/camera_pipeline.h"
 #include "business/camera_frame_retention.h"
 #include "business/camera_task_repository.h"
 #include "business/frame_artifact_writer.h"
+#include "server/camera_run_spec.h"
 #include "server/camera_task_queue.h"
 
 namespace yolo11_server {
 
 namespace {
-
-using nlohmann::json;
 
 long long wallNowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -33,50 +31,21 @@ std::string makeRecoveryRunId(long long now_ms) {
         std::to_string(sequence.fetch_add(1));
 }
 
-CameraTaskCommand recoveryCommand(
+CameraRunSpec recoveryRunSpec(
+    const AppConfig& config,
     const CameraTaskDefinition& task,
-    const CameraTaskRunRecord& run
+    std::string run_id,
+    long long create_time_ms
 ) {
-    CameraTaskCommand command;
-    command.task_id = task.task_id;
-    command.run_id = run.run_id;
-    command.camera_profile = task.camera_profile;
-    command.definition_version = task.version;
-    command.frame_interval_ms = task.frame_interval_ms;
-    command.output_mode = task.output_mode;
-    command.jpeg_quality = task.jpeg_quality;
-    command.max_width = task.max_width;
-    command.max_height = task.max_height;
-    command.retention_days = task.retention_days;
-    command.max_saved_frames = task.max_saved_frames;
-    command.analysis_enabled = task.analysis_enabled;
-    command.target_infer_fps = task.target_infer_fps;
-    command.algorithm_profile = task.algorithm_profile;
-    command.algorithms = task.algorithms;
-    command.callback_profile = task.callback_profile;
-    command.create_time_ms = run.create_time_ms;
-    return command;
-}
-
-std::string recoveryDefinitionJson(const CameraTaskDefinition& task) {
-    return json({
-        {"camera_profile", task.camera_profile},
-        {"frame_interval_ms", task.frame_interval_ms},
-        {"output_mode", task.output_mode},
-        {"jpeg_quality", task.jpeg_quality},
-        {"max_width", task.max_width},
-        {"max_height", task.max_height},
-        {"retention_days", task.retention_days},
-        {"max_saved_frames", task.max_saved_frames},
-        {"desired_state", task.desired_state},
-        {"analysis", {
-            {"enabled", task.analysis_enabled},
-            {"target_infer_fps", task.target_infer_fps},
-            {"algorithm_profile", task.algorithm_profile},
-            {"algorithms", task.algorithms}
-        }},
-        {"callback_profile", task.callback_profile}
-    }).dump();
+    CameraRunSpecOptions options;
+    options.origin = kCameraRunOriginCameraApi;
+    options.analysis_config_version = config.people_flow.config_version.empty()
+        ? task.algorithm_profile
+        : config.people_flow.config_version;
+    options.initial_occupancy = config.people_flow.initial_occupancy;
+    options.snapshot_fps = config.people_flow.snapshot_fps;
+    return makeCameraRunSpec(
+        task, std::move(run_id), create_time_ms, std::move(options));
 }
 
 bool acquireRecoveryOwnership(
@@ -184,21 +153,16 @@ bool prepareRecoveryCommands(
             return false;
         }
 
-        CameraTaskRunRecord run;
-        run.run_id = makeRecoveryRunId(wallNowMs());
-        run.task_id = task.task_id;
-        run.definition_version = task.version;
-        run.definition_json = recoveryDefinitionJson(task);
-        run.status = "queued";
-        run.camera_profile = task.camera_profile;
-        run.create_time_ms = wallNowMs();
-        run.last_update_ms = run.create_time_ms;
+        const long long create_time_ms = wallNowMs();
+        const auto spec = recoveryRunSpec(
+            config, task, makeRecoveryRunId(create_time_ms), create_time_ms);
+        CameraTaskRunRecord run = spec.toRunRecord();
         std::string code;
         if (!repository->createRun(run, code, error)) {
             if (!code.empty()) error = code + ": " + error;
             return false;
         }
-        commands.push_back(recoveryCommand(task, run));
+        commands.push_back(spec.toStartCommand());
     }
     return true;
 }
