@@ -17,6 +17,7 @@
 
 #include "server/camera_profile.h"
 #include "server/uri_masker.h"
+#include "server/worker_runtime_readiness.h"
 
 namespace yolo11_server {
 
@@ -283,25 +284,31 @@ crow::response PeopleFlowHttpServer::ready() const {
         worker_items.push_back({
             {"consumer_name", worker.consumer_name}, {"alive", worker.alive},
             {"status", worker.status}, {"runner_model_type", worker.runner_model_type},
-            {"worker_group", worker.worker_group}, {"last_error", worker.last_error}
+            {"worker_group", worker.worker_group},
+            {"runtime_mode", worker.runtime_mode},
+            {"worker_generation", worker.worker_generation},
+            {"legacy_people_flow_role", worker.legacy_people_flow_role},
+            {"camera_task_manager_running",
+                worker.camera_task_manager_running},
+            {"hub_registry_ready", worker.hub_registry_ready},
+            {"coordination_healthy", worker.coordination_healthy},
+            {"last_error", worker.last_error}
         });
     }
     const auto camera = camera_task_controller_
         ? camera_task_controller_->health() : CameraTaskHttpHealth{};
-    bool camera_role_alive = !camera.enabled;
-    AlgorithmRuntimeSnapshot algorithm_runtime;
-    if (camera.enabled) {
-        for (const auto& worker : workers) {
-            if (worker.alive && worker.worker_kind == "vision_host" &&
-                worker.task_kind.find("camera_frame") != std::string::npos) {
-                camera_role_alive = true;
-                if (worker.algorithm_runtime.generated_at_ms >
-                    algorithm_runtime.generated_at_ms) {
-                    algorithm_runtime = worker.algorithm_runtime;
-                }
-            }
-        }
-    }
+    const auto worker_readiness = evaluateWorkerRuntimeReadiness(
+        workers,
+        camera.enabled,
+        config_.runtime.unified_camera_pipeline);
+    const std::string expected_runtime_mode =
+        config_.runtime.unified_camera_pipeline
+            ? "unified_camera_pipeline" : "legacy_split";
+    const bool legacy_role_absent =
+        !config_.runtime.unified_camera_pipeline ||
+        !worker_readiness.legacy_people_flow_worker_detected;
+    const auto& algorithm_runtime =
+        worker_readiness.algorithm_runtime;
     const bool algorithm_runtime_available =
         !camera.enabled || algorithm_runtime.generated_at_ms > 0;
     const bool algorithm_runtime_fresh = !camera.enabled ||
@@ -323,7 +330,14 @@ crow::response PeopleFlowHttpServer::ready() const {
     const bool camera_ready = !camera.enabled ||
         (camera.initialized && camera.token_configured && camera.storage_ok &&
             camera.output_root_writable && camera.worker_num_valid &&
-            camera.callback_config_valid && camera_role_alive &&
+            camera.callback_config_valid &&
+            worker_readiness.camera_role_alive &&
+            worker_readiness.single_vision_worker &&
+            worker_readiness.mode_consistent &&
+            legacy_role_absent &&
+            worker_readiness.coordination_healthy &&
+            worker_readiness.camera_task_manager_running &&
+            worker_readiness.hub_registry_ready &&
             algorithm_runtime_available && algorithm_runtime_fresh &&
             algorithm_runtime.host_running && inference_pool_ready &&
             callback_delivery_ready);
@@ -334,7 +348,17 @@ crow::response PeopleFlowHttpServer::ready() const {
         {"worker_error", worker_error}, {"workers", worker_items},
         {"security_enabled", config_.people_flow.security.enabled},
         {"camera_tasks_ready", camera_ready},
-        {"camera_frame_role_alive", camera_role_alive},
+        {"camera_frame_role_alive", worker_readiness.camera_role_alive},
+        {"expected_runtime_mode", expected_runtime_mode},
+        {"worker_mode_consistent", worker_readiness.mode_consistent},
+        {"single_vision_worker", worker_readiness.single_vision_worker},
+        {"legacy_people_flow_worker_detected",
+            worker_readiness.legacy_people_flow_worker_detected},
+        {"worker_coordination_healthy",
+            worker_readiness.coordination_healthy},
+        {"camera_task_manager_running",
+            worker_readiness.camera_task_manager_running},
+        {"hub_registry_ready", worker_readiness.hub_registry_ready},
         {"algorithm_runtime_available", algorithm_runtime_available},
         {"algorithm_runtime_fresh", algorithm_runtime_fresh},
         {"algorithm_runtime_generated_at_ms", algorithm_runtime.generated_at_ms},

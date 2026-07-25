@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include <hiredis/hiredis.h>
 
@@ -71,6 +72,54 @@ int main() {
     const std::string task_id = "lease_fence_" + std::to_string(unique);
     const std::string run_id = "run_fence_" + std::to_string(unique);
     std::string error;
+
+    require(first.acquireVisionWorkerLease(
+            "unified_camera_pipeline", 5, error),
+        "first unified Worker process must acquire startup coordination: " +
+            error);
+    error.clear();
+    require(!second.acquireVisionWorkerLease(
+            "unified_camera_pipeline", 5, error),
+        "a second unified Worker process must not consume concurrently");
+    error.clear();
+    require(!second.acquireVisionWorkerLease(
+            "legacy_split", 5, error),
+        "a legacy Worker mode must not overlap the unified Worker");
+    error.clear();
+    require(first.refreshVisionWorkerLease(
+            "unified_camera_pipeline", 5, error),
+        "the owning Worker generation must refresh process ownership: " +
+            error);
+    error.clear();
+    require(first.releaseVisionWorkerLease(
+            "unified_camera_pipeline", error),
+        "the owning Worker generation must release process ownership: " +
+            error);
+    error.clear();
+    require(second.acquireVisionWorkerLease(
+            "unified_camera_pipeline", 5, error),
+        "replacement Worker must acquire process ownership after release: " +
+            error);
+    error.clear();
+    require(second.releaseVisionWorkerLease(
+            "unified_camera_pipeline", error),
+        "replacement Worker must release process ownership: " + error);
+    error.clear();
+    require(first.acquireVisionWorkerLease(
+            "legacy_split", 3, error),
+        "legacy Worker must acquire the recovery-drill lease: " + error);
+    std::this_thread::sleep_for(std::chrono::milliseconds(3300));
+    error.clear();
+    require(second.acquireVisionWorkerLease(
+            "unified_camera_pipeline", 3, error),
+        "unified replacement must take ownership after a crashed Worker's "
+        "lease expires: " + error);
+    error.clear();
+    require(second.releaseVisionWorkerLease(
+            "unified_camera_pipeline", error),
+        "recovered unified Worker must release process ownership: " +
+            error);
+    error.clear();
 
     require(first.acquireRunLease(task_id, run_id, error),
         "first Worker generation must acquire the Run lease: " + error);

@@ -1,8 +1,19 @@
 #include "server/vision_worker_host.h"
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <sstream>
 #include <utility>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <spdlog/spdlog.h>
 
@@ -13,9 +24,41 @@
 #include "server/camera_task_queue.h"
 #include "server/model_runner.h"
 #include "server/people_flow_inference_worker.h"
+#include "server/redis_task_queue.h"
 #include "server/rtsp_camera_frame_source.h"
 
 namespace yolo11_server {
+
+namespace {
+
+long long wallNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string processIdString() {
+#ifdef _WIN32
+    return std::to_string(
+        static_cast<unsigned long long>(::GetCurrentProcessId()));
+#else
+    return std::to_string(static_cast<long long>(::getpid()));
+#endif
+}
+
+std::string hostNameString() {
+    char buffer[256] = { 0 };
+#ifdef _WIN32
+    DWORD size = static_cast<DWORD>(sizeof(buffer));
+    if (::GetComputerNameA(buffer, &size)) return std::string(buffer, size);
+#else
+    if (::gethostname(buffer, sizeof(buffer) - 1) == 0) {
+        return std::string(buffer);
+    }
+#endif
+    return "unknown";
+}
+
+}  // namespace
 
 VisionWorkerHost::VisionWorkerHost(
     int worker_id,
@@ -25,7 +68,10 @@ VisionWorkerHost::VisionWorkerHost(
 ) : worker_id_(worker_id),
     config_(config),
     people_flow_consumer_name_(std::move(people_flow_consumer_name)),
-    camera_manager_factory_(std::move(camera_manager_factory)) {
+    camera_manager_factory_(std::move(camera_manager_factory)),
+    process_start_time_ms_(wallNowMs()),
+    worker_generation_(
+        processIdString() + ":" + std::to_string(process_start_time_ms_)) {
 }
 
 VisionWorkerHost::~VisionWorkerHost() noexcept {
@@ -52,6 +98,16 @@ bool VisionWorkerHost::start(std::string& error) {
         error = config_.callbacks.config_error;
         return false;
     }
+    if (config_.runtime.unified_camera_pipeline &&
+        !config_.camera_tasks.enabled) {
+        error = "UNIFIED_CAMERA_PIPELINE_REQUIRES_CAMERA_TASKS";
+        return false;
+    }
+    if (config_.runtime.unified_camera_pipeline &&
+        !config_.worker.heartbeat_enabled) {
+        error = "UNIFIED_CAMERA_PIPELINE_REQUIRES_HEARTBEAT";
+        return false;
+    }
 
     hub_registry_ = createSharedCameraFrameHubRegistry(config_);
     if (!hub_registry_) {
@@ -59,17 +115,84 @@ bool VisionWorkerHost::start(std::string& error) {
         return false;
     }
     std::cerr << "[BOOT] shared Camera FrameHub registry created\n";
-    people_flow_worker_ = std::make_unique<PeopleFlowInferenceWorker>(
-        worker_id_, config_, people_flow_consumer_name_, hub_registry_);
-    std::cerr << "[BOOT] People Flow role constructed\n";
-    if (!people_flow_worker_->start()) {
-        error = "failed to start People Flow role";
-        people_flow_worker_.reset();
+
+    if (config_.runtime.unified_camera_pipeline) {
+        RedisSection heartbeat_redis = config_.redis;
+        heartbeat_redis.consumer_name = people_flow_consumer_name_;
+        heartbeat_queue_ =
+            std::make_unique<RedisTaskQueue>(heartbeat_redis);
+        if (!heartbeat_queue_->connect(error)) {
+            heartbeat_queue_.reset();
+            hub_registry_->stopAll();
+            hub_registry_.reset();
+            return false;
+        }
+        std::vector<WorkerHeartbeatRecord> existing_workers;
+        if (!heartbeat_queue_->getWorkerHeartbeats(
+                config_.worker.consumer_name_prefix,
+                config_.worker.worker_num,
+                existing_workers,
+                error)) {
+            heartbeat_queue_.reset();
+            hub_registry_->stopAll();
+            hub_registry_.reset();
+            return false;
+        }
+        const bool old_worker_alive = std::any_of(
+            existing_workers.begin(),
+            existing_workers.end(),
+            [](const WorkerHeartbeatRecord& worker) {
+                return worker.alive &&
+                    worker.worker_kind == "vision_host" &&
+                    (worker.legacy_people_flow_role ||
+                        worker.runtime_mode !=
+                            "unified_camera_pipeline");
+            });
+        if (old_worker_alive) {
+            error = "VISION_WORKER_MODE_CONFLICT";
+            heartbeat_queue_.reset();
+            hub_registry_->stopAll();
+            hub_registry_.reset();
+            return false;
+        }
+    }
+
+    worker_coordination_ = std::make_unique<CameraTaskQueue>(
+        config_.redis,
+        config_.camera_tasks,
+        people_flow_consumer_name_ + "_host");
+    const int lease_ttl = std::max(
+        config_.worker.heartbeat_ttl_seconds,
+        std::max(3, config_.worker.heartbeat_interval_ms / 1000 * 3));
+    if (!worker_coordination_->acquireVisionWorkerLease(
+            runtimeMode(), lease_ttl, error)) {
+        if (error.empty()) error = "VISION_WORKER_LEASE_CONFLICT";
+        heartbeat_queue_.reset();
+        worker_coordination_.reset();
         hub_registry_->stopAll();
         hub_registry_.reset();
         return false;
     }
-    std::cerr << "[BOOT] People Flow role started\n";
+    coordination_healthy_.store(true);
+
+    if (config_.runtime.unified_camera_pipeline) {
+        std::cerr
+            << "[BOOT] unified Camera-only Worker lease acquired\n";
+    }
+    else {
+        people_flow_worker_ = std::make_unique<PeopleFlowInferenceWorker>(
+            worker_id_, config_, people_flow_consumer_name_, hub_registry_);
+        std::cerr << "[BOOT] People Flow role constructed\n";
+        if (!people_flow_worker_->start()) {
+            error = "failed to start People Flow role";
+            people_flow_worker_.reset();
+            hub_registry_->stopAll();
+            hub_registry_.reset();
+            releaseWorkerCoordinationNoexcept();
+            return false;
+        }
+        std::cerr << "[BOOT] People Flow role started\n";
+    }
 
     if (config_.camera_tasks.enabled &&
         (config_.analysis.enabled || config_.callbacks.enabled)) {
@@ -88,10 +211,11 @@ bool VisionWorkerHost::start(std::string& error) {
             camera_algorithm_processor_.reset();
             camera_analysis_status_queue_.reset();
             camera_repository_.reset();
-            people_flow_worker_->stop();
+            if (people_flow_worker_) people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
             hub_registry_.reset();
+            releaseWorkerCoordinationNoexcept();
             return false;
         }
         camera_inference_pool_ = std::make_shared<CameraInferencePool>(
@@ -106,10 +230,11 @@ bool VisionWorkerHost::start(std::string& error) {
             camera_algorithm_processor_.reset();
             camera_analysis_status_queue_.reset();
             camera_repository_.reset();
-            people_flow_worker_->stop();
+            if (people_flow_worker_) people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
             hub_registry_.reset();
+            releaseWorkerCoordinationNoexcept();
             return false;
         }
         std::cerr << "[BOOT] fixed Camera inference pool started with "
@@ -127,10 +252,11 @@ bool VisionWorkerHost::start(std::string& error) {
             camera_algorithm_processor_.reset();
             camera_analysis_status_queue_.reset();
             camera_repository_.reset();
-            people_flow_worker_->stop();
+            if (people_flow_worker_) people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
             hub_registry_.reset();
+            releaseWorkerCoordinationNoexcept();
             return false;
         }
         std::cerr << "[BOOT] durable callback delivery worker started\n";
@@ -147,10 +273,11 @@ bool VisionWorkerHost::start(std::string& error) {
             if (callback_delivery_worker_) callback_delivery_worker_->stop();
             callback_delivery_worker_.reset();
             camera_repository_.reset();
-            people_flow_worker_->stop();
+            if (people_flow_worker_) people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
             hub_registry_.reset();
+            releaseWorkerCoordinationNoexcept();
             return false;
         }
         std::cerr << "[BOOT] creating Camera Task runtime\n";
@@ -167,25 +294,40 @@ bool VisionWorkerHost::start(std::string& error) {
             if (callback_delivery_worker_) callback_delivery_worker_->stop();
             callback_delivery_worker_.reset();
             camera_repository_.reset();
-            people_flow_worker_->stop();
+            if (people_flow_worker_) people_flow_worker_->stop();
             people_flow_worker_.reset();
             hub_registry_->stopAll();
             hub_registry_.reset();
+            releaseWorkerCoordinationNoexcept();
             return false;
         }
         std::cerr << "[BOOT] Camera Task role started\n";
     }
 
     running_.store(true);
-    people_flow_worker_->setAlgorithmRuntimeProvider(
-        [this]() { return algorithmRuntimeSnapshot(); });
+    if (people_flow_worker_) {
+        people_flow_worker_->setAlgorithmRuntimeProvider(
+            [this]() { return algorithmRuntimeSnapshot(); });
+    }
+    try {
+        heartbeat_thread_ =
+            std::thread([this]() { heartbeatLoop(); });
+    }
+    catch (const std::exception& exception) {
+        error = std::string(
+            "failed to create Worker coordination thread: ") +
+            exception.what();
+        stop();
+        return false;
+    }
     return true;
 }
 
 void VisionWorkerHost::stop() noexcept {
     if (!running_.exchange(false) && !people_flow_worker_ && !camera_task_manager_ &&
         !camera_inference_pool_ && !camera_algorithm_processor_ &&
-        !callback_delivery_worker_ && !hub_registry_) {
+        !callback_delivery_worker_ && !hub_registry_ && !heartbeat_queue_ &&
+        !worker_coordination_) {
         return;
     }
     try {
@@ -197,6 +339,7 @@ void VisionWorkerHost::stop() noexcept {
         if (camera_algorithm_processor_) camera_algorithm_processor_->stop();
         if (callback_delivery_worker_) callback_delivery_worker_->stop();
         if (people_flow_worker_) people_flow_worker_->stop();
+        if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
         camera_task_manager_.reset();
         camera_inference_pool_.reset();
         camera_algorithm_processor_.reset();
@@ -206,6 +349,7 @@ void VisionWorkerHost::stop() noexcept {
         people_flow_worker_.reset();
         if (hub_registry_) hub_registry_->stopAll();
         hub_registry_.reset();
+        releaseWorkerCoordinationNoexcept();
     }
     catch (...) {
         spdlog::error("VisionWorkerHost stop exception ignored");
@@ -214,6 +358,119 @@ void VisionWorkerHost::stop() noexcept {
 
 bool VisionWorkerHost::running() const {
     return running_.load();
+}
+
+std::string VisionWorkerHost::runtimeMode() const {
+    return config_.runtime.unified_camera_pipeline
+        ? "unified_camera_pipeline" : "legacy_split";
+}
+
+bool VisionWorkerHost::legacyPeopleFlowRoleRunning() const {
+    return people_flow_worker_ && people_flow_worker_->running();
+}
+
+bool VisionWorkerHost::coordinationHealthy() const {
+    return coordination_healthy_.load();
+}
+
+void VisionWorkerHost::heartbeatLoop() noexcept {
+    const int lease_ttl = std::max(
+        config_.worker.heartbeat_ttl_seconds,
+        std::max(3, config_.worker.heartbeat_interval_ms / 1000 * 3));
+    while (running_.load()) {
+        std::string lease_error;
+        if (!worker_coordination_ ||
+            !worker_coordination_->refreshVisionWorkerLease(
+                runtimeMode(), lease_ttl, lease_error)) {
+            coordination_healthy_.store(false);
+            spdlog::error(
+                "Vision Worker coordination lease lost: {}",
+                lease_error);
+            if (camera_task_manager_) camera_task_manager_->stop();
+            if (people_flow_worker_) people_flow_worker_->stop();
+            running_.store(false);
+        }
+        writeHeartbeatNoexcept();
+        if (!running_.load()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(
+            config_.worker.heartbeat_interval_ms));
+    }
+    writeHeartbeatNoexcept();
+}
+
+void VisionWorkerHost::writeHeartbeatNoexcept() noexcept {
+    if (!heartbeat_queue_ || !config_.worker.heartbeat_enabled) return;
+    try {
+        WorkerHeartbeatRecord heartbeat;
+        heartbeat.consumer_name = people_flow_consumer_name_;
+        heartbeat.pid = processIdString();
+        heartbeat.host = hostNameString();
+        heartbeat.worker_id = worker_id_;
+        heartbeat.gpu_id = config_.model.gpu_id;
+        heartbeat.model_type = "vision_host";
+        heartbeat.runner_model_type = config_.model.type;
+        heartbeat.worker_group = config_.worker.worker_group;
+        heartbeat.worker_kind = "vision_host";
+        heartbeat.task_kind = "camera_pipeline";
+        heartbeat.stream_type = "long_running_stream";
+        heartbeat.runtime_mode = runtimeMode();
+        heartbeat.worker_generation = worker_generation_;
+        heartbeat.legacy_people_flow_role = false;
+        heartbeat.camera_task_manager_running =
+            camera_task_manager_ && camera_task_manager_->running();
+        heartbeat.hub_registry_ready = hub_registry_ != nullptr;
+        heartbeat.coordination_healthy =
+            coordination_healthy_.load();
+        heartbeat.engine_path = config_.model.engine_path;
+        heartbeat.labels_path = config_.model.labels_path;
+        heartbeat.max_concurrency =
+            config_.camera_tasks.max_active_runs;
+        const auto active_runs = activeCameraRunIds();
+        heartbeat.status = coordination_healthy_.load()
+            ? (active_runs.empty() ? "idle" : "running")
+            : "failed";
+        if (!active_runs.empty()) {
+            heartbeat.current_task_id = active_runs.front();
+        }
+        heartbeat.start_time_ms = process_start_time_ms_;
+        heartbeat.last_heartbeat_ms = wallNowMs();
+        if (!coordination_healthy_.load()) {
+            heartbeat.last_error = "VISION_WORKER_LEASE_LOST";
+        }
+        heartbeat.algorithm_runtime = algorithmRuntimeSnapshot();
+        std::string error;
+        if (!heartbeat_queue_->writeWorkerHeartbeat(
+                heartbeat,
+                config_.worker.heartbeat_ttl_seconds,
+                error)) {
+            spdlog::warn(
+                "unified Vision Worker heartbeat failed: {}", error);
+        }
+    }
+    catch (...) {
+    }
+}
+
+void VisionWorkerHost::releaseWorkerCoordinationNoexcept() noexcept {
+    coordination_healthy_.store(false);
+    try {
+        if (heartbeat_queue_) {
+            std::string ignored;
+            heartbeat_queue_->deleteKey(
+                heartbeat_queue_->workerHeartbeatKey(
+                    people_flow_consumer_name_),
+                ignored);
+        }
+        if (worker_coordination_) {
+            std::string ignored;
+            worker_coordination_->releaseVisionWorkerLease(
+                runtimeMode(), ignored);
+        }
+    }
+    catch (...) {
+    }
+    heartbeat_queue_.reset();
+    worker_coordination_.reset();
 }
 
 std::vector<CameraHubStatus> VisionWorkerHost::hubSnapshots() const {

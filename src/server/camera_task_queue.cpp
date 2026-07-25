@@ -370,6 +370,95 @@ std::string CameraTaskQueue::leaseValue(const std::string& run_id) const {
     return run_id + "|" + lease_owner_token_;
 }
 
+std::string CameraTaskQueue::workerLeaseValue(
+    const std::string& runtime_mode
+) const {
+    return runtime_mode + "|" + lease_owner_token_;
+}
+
+std::string CameraTaskQueue::visionWorkerLeaseKey() const {
+    return "yolo:camera:vision-worker:lease";
+}
+
+bool CameraTaskQueue::acquireVisionWorkerLease(
+    const std::string& runtime_mode,
+    int ttl_seconds,
+    std::string& error
+) {
+    if (!safeKeyPart(runtime_mode) || ttl_seconds < 3) {
+        error = "invalid Vision Worker lease parameters";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!context_ && !connectLocked(error)) return false;
+    static const char* script =
+        "local current=redis.call('GET',KEYS[1]); "
+        "if not current then redis.call('SET',KEYS[1],ARGV[1],'EX',ARGV[2]); return 1; "
+        "elseif current==ARGV[1] then redis.call('EXPIRE',KEYS[1],ARGV[2]); return 2; "
+        "else return 0 end";
+    ReplyPtr reply(static_cast<redisReply*>(redisCommand(
+        context_, "EVAL %s 1 %s %s %d", script,
+        visionWorkerLeaseKey().c_str(),
+        workerLeaseValue(runtime_mode).c_str(), ttl_seconds)));
+    if (replyError(reply.get(), context_, error)) return false;
+    if (reply->type != REDIS_REPLY_INTEGER || reply->integer == 0) {
+        error = "VISION_WORKER_LEASE_CONFLICT";
+        return false;
+    }
+    return true;
+}
+
+bool CameraTaskQueue::refreshVisionWorkerLease(
+    const std::string& runtime_mode,
+    int ttl_seconds,
+    std::string& error
+) {
+    if (!safeKeyPart(runtime_mode) || ttl_seconds < 3) {
+        error = "invalid Vision Worker lease parameters";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!context_ && !connectLocked(error)) return false;
+    static const char* script =
+        "if redis.call('GET',KEYS[1])==ARGV[1] then "
+        "return redis.call('EXPIRE',KEYS[1],ARGV[2]) else return 0 end";
+    ReplyPtr reply(static_cast<redisReply*>(redisCommand(
+        context_, "EVAL %s 1 %s %s %d", script,
+        visionWorkerLeaseKey().c_str(),
+        workerLeaseValue(runtime_mode).c_str(), ttl_seconds)));
+    if (replyError(reply.get(), context_, error)) return false;
+    if (reply->type != REDIS_REPLY_INTEGER || reply->integer != 1) {
+        error = "VISION_WORKER_LEASE_LOST";
+        return false;
+    }
+    return true;
+}
+
+bool CameraTaskQueue::releaseVisionWorkerLease(
+    const std::string& runtime_mode,
+    std::string& error
+) {
+    if (!safeKeyPart(runtime_mode)) {
+        error = "invalid Vision Worker runtime mode";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!context_ && !connectLocked(error)) return false;
+    static const char* script =
+        "if redis.call('GET',KEYS[1])==ARGV[1] then "
+        "return redis.call('DEL',KEYS[1]) else return 0 end";
+    ReplyPtr reply(static_cast<redisReply*>(redisCommand(
+        context_, "EVAL %s 1 %s %s", script,
+        visionWorkerLeaseKey().c_str(),
+        workerLeaseValue(runtime_mode).c_str())));
+    if (replyError(reply.get(), context_, error)) return false;
+    if (reply->type != REDIS_REPLY_INTEGER || reply->integer != 1) {
+        error = "VISION_WORKER_LEASE_NOT_OWNED";
+        return false;
+    }
+    return true;
+}
+
 bool CameraTaskQueue::acquireRunLease(
     const std::string& task_id,
     const std::string& run_id,
@@ -594,16 +683,21 @@ bool CameraTaskQueue::updateHubStatus(const CameraHubStatus& status, std::string
         ? status.subscriber_types.at("people_flow") : 0;
     const int camera_task_subscribers = status.subscriber_types.count("camera_task")
         ? status.subscriber_types.at("camera_task") : 0;
+    const int camera_pipeline_subscribers =
+        status.subscriber_types.count("camera_pipeline")
+            ? status.subscriber_types.at("camera_pipeline") : 0;
     const std::string clean_error = sanitizedCameraError(status.last_error);
     ReplyPtr reply(static_cast<redisReply*>(redisCommand(context_,
         "HSET %s camera_profile %s hub_instance_id %s state %s backend %s subscriber_count %d "
-        "people_flow_subscribers %d camera_task_subscribers %d open_count %lld reconnect_count %d "
+        "people_flow_subscribers %d camera_task_subscribers %d camera_pipeline_subscribers %d "
+        "open_count %lld reconnect_count %d "
         "capture_fps %.6f source_fps %.6f latest_frame_age_ms %lld latest_sequence %llu width %d height %d "
         "resolution_changed %d resolution_change_count %lld last_frame_time_ms %lld "
         "last_error %s last_update_ms %lld",
         key.c_str(), status.camera_profile.c_str(), status.hub_instance_id.c_str(), status.state.c_str(),
         status.backend_name.c_str(), status.subscriber_count, people_flow_subscribers,
-        camera_task_subscribers, status.open_count, status.reconnect_count, status.capture_fps,
+        camera_task_subscribers, camera_pipeline_subscribers,
+        status.open_count, status.reconnect_count, status.capture_fps,
         status.source_fps, status.latest_frame_age_ms, status.latest_sequence, status.width, status.height,
         status.resolution_changed ? 1 : 0, status.resolution_change_count, status.last_frame_time_ms,
         clean_error.c_str(), nowMs())));
@@ -641,6 +735,8 @@ bool CameraTaskQueue::getHubStatus(
         static_cast<int>(parseLongLong(get("people_flow_subscribers")));
     status.snapshot.subscriber_types["camera_task"] =
         static_cast<int>(parseLongLong(get("camera_task_subscribers")));
+    status.snapshot.subscriber_types["camera_pipeline"] =
+        static_cast<int>(parseLongLong(get("camera_pipeline_subscribers")));
     status.snapshot.open_count = parseLongLong(get("open_count"));
     status.snapshot.reconnect_count = static_cast<int>(parseLongLong(get("reconnect_count")));
     try { status.snapshot.capture_fps = std::stod(get("capture_fps")); } catch (...) {}

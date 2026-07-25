@@ -45,3 +45,4 @@ The People Flow and Camera business-unification program is tracked separately:
 - [R2 immutable RunSpec and additive schema](UNIFIED_CAMERA_R2_RUNSPEC_AND_SCHEMA.md)
 - [R3 People Flow-equivalent Camera Pipeline output](UNIFIED_CAMERA_R3_PEOPLE_FLOW_EQUIVALENCE.md)
 - [R4 People Flow compatibility controller](UNIFIED_CAMERA_R4_COMPATIBILITY_CONTROLLER.md)
+- [R5 unified Worker, fencing, and readiness](UNIFIED_CAMERA_R5_WORKER_UNIFICATION.md)

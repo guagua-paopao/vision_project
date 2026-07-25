@@ -64,7 +64,13 @@ int main() {
     heartbeat.host = "loopback";
     heartbeat.worker_id = 1;
     heartbeat.worker_kind = "vision_host";
-    heartbeat.task_kind = "live_people_flow,camera_frame";
+    heartbeat.task_kind = "camera_pipeline";
+    heartbeat.runtime_mode = "unified_camera_pipeline";
+    heartbeat.worker_generation = "123:1784800000000";
+    heartbeat.legacy_people_flow_role = false;
+    heartbeat.camera_task_manager_running = true;
+    heartbeat.hub_registry_ready = true;
+    heartbeat.coordination_healthy = true;
     heartbeat.status = "idle";
     heartbeat.last_heartbeat_ms = 1784800000000LL;
     auto& runtime = heartbeat.algorithm_runtime;
@@ -112,7 +118,15 @@ int main() {
             records.front().found,
         "algorithm runtime heartbeat must read: " + error);
     const auto& loaded = records.front().algorithm_runtime;
-    require(loaded.generated_at_ms == runtime.generated_at_ms &&
+    require(records.front().runtime_mode ==
+                "unified_camera_pipeline" &&
+            records.front().worker_generation ==
+                heartbeat.worker_generation &&
+            !records.front().legacy_people_flow_role &&
+            records.front().camera_task_manager_running &&
+            records.front().hub_registry_ready &&
+            records.front().coordination_healthy &&
+            loaded.generated_at_ms == runtime.generated_at_ms &&
             loaded.host_running &&
             loaded.active_pipelines == 3 &&
             loaded.inference_workers_configured == 2 &&

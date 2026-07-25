@@ -316,6 +316,13 @@ add_test(NAME algorithm_runtime_heartbeat_test
 set_tests_properties(algorithm_runtime_heartbeat_test PROPERTIES
     SKIP_RETURN_CODE 77)
 
+add_executable(worker_runtime_readiness_test
+    tests/worker_runtime_readiness_test.cpp)
+target_include_directories(worker_runtime_readiness_test PRIVATE
+    "${PROJECT_INCLUDE_DIR}")
+add_test(NAME worker_runtime_readiness_test
+    COMMAND worker_runtime_readiness_test)
+
 add_executable(camera_task_lease_fence_test
     tests/camera_task_lease_fence_test.cpp)
 target_include_directories(camera_task_lease_fence_test PRIVATE
