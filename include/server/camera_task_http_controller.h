@@ -1,7 +1,6 @@
 #pragma once
 
 #include <memory>
-#include <mutex>
 #include <string>
 
 #include <crow.h>
@@ -13,6 +12,8 @@
 #include "server/camera_task_api_control.h"
 
 namespace yolo11_server {
+
+class UnifiedCameraApplicationService;
 
 struct CameraTaskHttpHealth {
     bool enabled = false;
@@ -32,7 +33,8 @@ public:
         std::shared_ptr<ICameraTaskApiControl> control = {},
         std::string token_override = {},
         std::shared_ptr<CameraProfileRegistry> profile_registry = {},
-        AlgorithmRuntimeSnapshotReader algorithm_runtime_reader = {}
+        AlgorithmRuntimeSnapshotReader algorithm_runtime_reader = {},
+        std::shared_ptr<UnifiedCameraApplicationService> application_service = {}
     );
 
     bool initialize(std::string& error);
@@ -117,12 +119,9 @@ private:
     std::shared_ptr<CameraTaskRepository> repository_;
     std::shared_ptr<ICameraTaskApiControl> control_;
     std::shared_ptr<CameraProfileRegistry> profile_registry_;
+    std::shared_ptr<UnifiedCameraApplicationService> application_service_;
     AlgorithmRuntimeSnapshotReader algorithm_runtime_reader_;
     std::string token_;
-    // Camera lifecycle mutations may call one another (create/update -> start),
-    // so a recursive process-local lock serializes optimistic checks and their
-    // stop/start side effects in the supported single-control-plane process.
-    mutable std::recursive_mutex lifecycle_mutex_;
     bool initialized_ = false;
     bool storage_ok_ = false;
     bool output_root_writable_ = false;

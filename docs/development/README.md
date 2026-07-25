@@ -37,3 +37,8 @@ M0-M11 FrameHub history stays immutable:
 - [P4 durable alert callback](ALGORITHM_SERVICE_P4_ALERT_CALLBACK.md)
 - [P5 integration, observability, and Postman](ALGORITHM_SERVICE_P5_INTEGRATION.md)
 - [P6 target-hardware acceptance and release](ALGORITHM_SERVICE_P6_RELEASE.md)
+
+The People Flow and Camera business-unification program is tracked separately:
+
+- [Approved unification refactor plan](../PEOPLE_FLOW_CAMERA_UNIFICATION_REFACTOR_PLAN.md)
+- [R0-R1 contract baseline and application boundary](UNIFIED_CAMERA_R0_R1_FOUNDATION.md)
