@@ -16,3 +16,18 @@ jobs:
         run: python tools/qt_demo_contract_test.py
       - name: Validate Web Admin parity and security
         run: python tests/web_admin_contract_test.py
+      - name: Validate PowerShell acceptance scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem scripts -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$($_.Extent): $($_.Message)" }
+            }
+          }
+          if ($failed) { throw "PowerShell syntax validation failed." }

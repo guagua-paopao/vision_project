@@ -8,12 +8,23 @@ param(
     [int]$AlertWaitSeconds = 180,
     [string]$PostmanDesktopPath = "",
     [string]$PostmanRunner = "npx.cmd",
+    [string]$EvidenceRoot = ".\reports\p6",
     [switch]$SkipPostman,
     [switch]$SkipLiveAlert,
     [switch]$SkipWorkerRestart,
     [switch]$SkipRtspReconnect,
     [switch]$SkipDeadLetterReplay,
+    [switch]$SkipMultiCameraStress,
+    [switch]$SkipRuntimeRollback,
     [switch]$SkipSoak,
+    [switch]$UnifiedCameraPipeline,
+    [int]$StressCameraCount = 3,
+    [double]$MinAggregateInferenceFps = 2.0,
+    [double]$MaxProcessCpuPercent = 15.0,
+    [double]$MaxProcessWorkingSetMiB = 768.0,
+    [int]$MaxGpuMemoryUsedMiB = 3072,
+    [int]$MaxGpuTemperatureC = 80,
+    [double]$MaxDiskUsedPercent = 90.0,
     [switch]$KeepInfrastructure
 )
 
@@ -24,6 +35,15 @@ if ($DurationMinutes -le 0) {
 if ($RtspSmokeSeconds -lt 5) {
     throw "RtspSmokeSeconds must be at least 5."
 }
+if ($StressCameraCount -lt 1 -or $StressCameraCount -gt 3) {
+    throw "StressCameraCount must be between 1 and 3 while the compatibility Run is active."
+}
+
+# Some Windows hosts expose both Path and PATH in the inherited environment.
+# Normalize the process copy before Start-Process creates test helpers.
+$processPath = [Environment]::GetEnvironmentVariable("Path", "Process")
+[Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+[Environment]::SetEnvironmentVariable("Path", $processPath, "Process")
 
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $ProjectRoot
@@ -37,7 +57,13 @@ if (-not ($rtspUri.StartsWith("rtsp://", [StringComparison]::OrdinalIgnoreCase) 
 }
 
 $stamp = [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssZ")
-$evidenceDir = Join-Path $ProjectRoot "reports\p6\$stamp"
+$resolvedEvidenceRoot = if ([IO.Path]::IsPathRooted($EvidenceRoot)) {
+    [IO.Path]::GetFullPath($EvidenceRoot)
+}
+else {
+    [IO.Path]::GetFullPath((Join-Path $ProjectRoot $EvidenceRoot))
+}
+$evidenceDir = Join-Path $resolvedEvidenceRoot $stamp
 $tempRoot = [IO.Path]::GetFullPath((Join-Path $ProjectRoot "out\tmp"))
 $tempDir = Join-Path $tempRoot "p6_$stamp"
 New-Item -ItemType Directory -Force -Path $evidenceDir, $tempDir | Out-Null
@@ -124,7 +150,8 @@ function Write-ProtectedEvidence([string]$Name, [string]$Text) {
 function New-AcceptanceConfig(
     [string]$Source,
     [string]$Destination,
-    [int]$RuntimeRedisPort
+    [int]$RuntimeRedisPort,
+    [bool]$UseUnifiedCameraPipeline
 ) {
     $lines = [IO.File]::ReadAllLines($Source)
     $section = ""
@@ -134,6 +161,7 @@ function New-AcceptanceConfig(
     $maxAttemptsChanged = $false
     $initialBackoffChanged = $false
     $maxBackoffChanged = $false
+    $runtimeModeChanged = -not $UseUnifiedCameraPipeline
     for ($index = 0; $index -lt $lines.Length; ++$index) {
         $line = $lines[$index]
         if ($line -match '^([a-z][a-z0-9_]*):\s*$') {
@@ -173,11 +201,18 @@ function New-AcceptanceConfig(
             $line -match '^  port:\s*\d+\s*$') {
             $lines[$index] = "  port: $RuntimeRedisPort"
             $redisPortChanged = $true
+            continue
+        }
+        if ($section -eq "runtime" -and $UseUnifiedCameraPipeline -and
+            $line -match '^  unified_camera_pipeline:\s*(?:true|false)\s*$') {
+            $lines[$index] = "  unified_camera_pipeline: true"
+            $runtimeModeChanged = $true
         }
     }
     if (-not $callbacksEnabled -or -not $loopbackAllowed -or
         -not $redisPortChanged -or -not $maxAttemptsChanged -or
-        -not $initialBackoffChanged -or -not $maxBackoffChanged) {
+        -not $initialBackoffChanged -or -not $maxBackoffChanged -or
+        -not $runtimeModeChanged) {
         throw "Acceptance config transform did not match the expected secure defaults."
     }
     [IO.File]::WriteAllLines(
@@ -339,10 +374,10 @@ try {
     $workerConfig = Join-Path $tempDir "worker.yaml"
     New-AcceptanceConfig `
         (Join-Path $ProjectRoot "config\server.yaml") `
-        $serverConfig $redisPort
+        $serverConfig $redisPort ([bool]$UnifiedCameraPipeline)
     New-AcceptanceConfig `
         (Join-Path $ProjectRoot "config\worker.yaml") `
-        $workerConfig $redisPort
+        $workerConfig $redisPort ([bool]$UnifiedCameraPipeline)
 
     $mockStdout = Join-Path $evidenceDir "mock.stdout.log"
     $mockStderr = Join-Path $evidenceDir "mock.stderr.log"
@@ -421,6 +456,7 @@ try {
                 -ApiBase "http://127.0.0.1:8087/api/v1" `
                 -CameraProfile $CameraProfile `
                 -WaitSeconds 120 `
+                -RequireUnifiedCameraPipeline:$UnifiedCameraPipeline `
                 -EvidenceDir (Join-Path $evidenceDir "rtsp_reconnect") `
                 2>&1 | Out-String
         }
@@ -481,6 +517,32 @@ try {
         Write-Host (Protect-Text $deadLetterOutput).Trim()
     }
 
+    if (-not $SkipMultiCameraStress) {
+        try {
+            $stressOutput = & (Join-Path $PSScriptRoot `
+                "exercise_multi_camera_stress.ps1") `
+                -ApiBase "http://127.0.0.1:8087/api/v1" `
+                -CameraProfile $CameraProfile `
+                -CameraCount $StressCameraCount `
+                -ExpectedExistingSubscribers 1 `
+                -WaitSeconds 120 `
+                -MeasurementSeconds 20 `
+                -MinAggregateInferenceFps $MinAggregateInferenceFps `
+                -RequireUnifiedCameraPipeline:$UnifiedCameraPipeline `
+                -EvidenceDir (Join-Path $evidenceDir "multi_camera_stress") `
+                2>&1 | Out-String
+        }
+        catch {
+            $stressOutput = ($_ | Out-String)
+            Write-ProtectedEvidence "multi_camera_stress.txt" `
+                $stressOutput | Out-Null
+            throw
+        }
+        Write-ProtectedEvidence "multi_camera_stress.txt" `
+            $stressOutput | Out-Null
+        Write-Host (Protect-Text $stressOutput).Trim()
+    }
+
     if (-not $SkipPostman) {
         $runner = Get-Command $PostmanRunner -CommandType Application `
             -ErrorAction SilentlyContinue
@@ -521,16 +583,24 @@ try {
 
     if (-not $SkipSoak) {
         try {
+            $soakArguments = @{
+                BaseUrl = "http://127.0.0.1:8087"
+                CreateEphemeralCamera = $true
+                CameraProfile = $CameraProfile
+                DurationMinutes = $DurationMinutes
+                PollSeconds = 5
+                CaptureHostTelemetry = $true
+                EvidenceRoot = (Join-Path $resolvedEvidenceRoot "soak")
+            }
+            if ($UnifiedCameraPipeline) {
+                $soakArguments.RequireCameraPipelineSubscriber = $true
+            }
+            else {
+                $soakArguments.RequirePeopleFlowSubscriber = $true
+            }
             $soakOutput = & (Join-Path $PSScriptRoot `
-                "soak_camera_frame_feature.ps1") `
-                -BaseUrl "http://127.0.0.1:8087" `
-                -CreateEphemeralCamera `
-                -CameraProfile $CameraProfile `
-                -DurationMinutes $DurationMinutes `
-                -PollSeconds 5 `
-                -RequirePeopleFlowSubscriber `
-                -CaptureHostTelemetry `
-                -EvidenceRoot "reports\p6\soak" 2>&1 | Out-String
+                "soak_camera_frame_feature.ps1") @soakArguments `
+                2>&1 | Out-String
         }
         catch {
             $soakOutput = ($_ | Out-String)
@@ -540,7 +610,7 @@ try {
         Write-ProtectedEvidence "soak.txt" $soakOutput | Out-Null
         Write-Host (Protect-Text $soakOutput).Trim()
         $latestSoak = Get-ChildItem -LiteralPath (
-            Join-Path $ProjectRoot "reports\p6\soak"
+            Join-Path $resolvedEvidenceRoot "soak"
         ) -Directory | Sort-Object Name -Descending | Select-Object -First 1
         if ($latestSoak) {
             $soakSummaryPath = Join-Path $latestSoak.FullName "summary.json"
@@ -549,6 +619,54 @@ try {
                     -Raw -Encoding UTF8 | ConvertFrom-Json
             }
         }
+        if (-not $soakSummary -or -not $soakSummary.passed) {
+            throw "Soak summary is missing or did not pass."
+        }
+        $telemetry = $soakSummary.host_telemetry
+        if ([double]$telemetry.max_process_cpu_percent -gt
+                $MaxProcessCpuPercent -or
+            [double]$telemetry.max_process_working_set_mib -gt
+                $MaxProcessWorkingSetMiB -or
+            [int]$telemetry.max_gpu_memory_used_mib -gt
+                $MaxGpuMemoryUsedMiB -or
+            [int]$telemetry.max_gpu_temperature_c -gt
+                $MaxGpuTemperatureC -or
+            [double]$telemetry.max_disk_used_percent -gt
+                $MaxDiskUsedPercent) {
+            throw "Soak resource usage exceeded an approved R7 threshold."
+        }
+    }
+
+    if ($UnifiedCameraPipeline -and -not $SkipRuntimeRollback) {
+        if ($peopleFlowSessionId) {
+            Invoke-RestMethod -Method Post -Uri (
+                "http://127.0.0.1:8087/api/v1/people-flow/" +
+                $peopleFlowSessionId + "/stop"
+            ) -Headers @{ Authorization = "Bearer $adminToken" } `
+                -TimeoutSec 10 | Out-Null
+            $peopleFlowSessionId = ""
+        }
+        try {
+            $rollbackOutput = & (Join-Path $PSScriptRoot `
+                "exercise_runtime_mode_rollback.ps1") `
+                -Root $ProjectRoot `
+                -BuildDir $BuildDir `
+                -ServerConfig $serverConfig `
+                -WorkerConfig $workerConfig `
+                -ApiBase "http://127.0.0.1:8087/api/v1" `
+                -WaitSeconds 120 `
+                -EvidenceDir (Join-Path $evidenceDir "runtime_rollback") `
+                2>&1 | Out-String
+        }
+        catch {
+            $rollbackOutput = ($_ | Out-String)
+            Write-ProtectedEvidence "runtime_rollback.txt" `
+                $rollbackOutput | Out-Null
+            throw
+        }
+        Write-ProtectedEvidence "runtime_rollback.txt" `
+            $rollbackOutput | Out-Null
+        Write-Host (Protect-Text $rollbackOutput).Trim()
     }
 
     $passed = $true
@@ -582,7 +700,11 @@ finally {
     }
     if (-not $KeepInfrastructure) {
         foreach ($container in @($postgresContainer, $redisContainer)) {
-            & docker.exe rm -f $container 2>$null | Out-Null
+            try {
+                & docker.exe rm -f $container 2>$null | Out-Null
+            }
+            catch {
+            }
         }
     }
     foreach ($name in $managedEnvironmentNames) {
@@ -614,6 +736,12 @@ finally {
         completed_at = [DateTimeOffset]::UtcNow.ToString("o")
         passed = $passed
         failure = $failure
+        runtime_mode = if ($UnifiedCameraPipeline) {
+            "unified_camera_pipeline"
+        }
+        else {
+            "legacy_split"
+        }
         camera_profile = $CameraProfile
         rtsp_uri_persisted = $false
         engine_sha256 = $actualHash
@@ -631,7 +759,22 @@ finally {
         worker_restart_required = -not [bool]$SkipWorkerRestart
         rtsp_reconnect_required = -not [bool]$SkipRtspReconnect
         dead_letter_replay_required = -not [bool]$SkipDeadLetterReplay
+        multi_camera_stress_required =
+            -not [bool]$SkipMultiCameraStress
+        runtime_rollback_required =
+            [bool]$UnifiedCameraPipeline -and
+            -not [bool]$SkipRuntimeRollback
         soak_required = -not [bool]$SkipSoak
+        approved_resource_thresholds = [ordered]@{
+            max_process_cpu_percent = $MaxProcessCpuPercent
+            max_process_working_set_mib =
+                $MaxProcessWorkingSetMiB
+            max_gpu_memory_used_mib = $MaxGpuMemoryUsedMiB
+            max_gpu_temperature_c = $MaxGpuTemperatureC
+            max_disk_used_percent = $MaxDiskUsedPercent
+            min_aggregate_inference_fps =
+                $MinAggregateInferenceFps
+        }
         soak = $soakSummary
         disposable_infrastructure_removed = -not [bool]$KeepInfrastructure
     }

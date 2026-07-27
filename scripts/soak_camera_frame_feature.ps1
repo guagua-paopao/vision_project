@@ -9,6 +9,7 @@ param(
     [double]$DurationMinutes = 60,
     [int]$PollSeconds = 5,
     [switch]$RequirePeopleFlowSubscriber,
+    [switch]$RequireCameraPipelineSubscriber,
     [switch]$CaptureHostTelemetry,
     [switch]$LeaveRunning,
     [string]$EvidenceRoot = ".\reports\soak"
@@ -32,7 +33,13 @@ if (-not $token) { throw "Camera Task admin token is required." }
 $headers = @{ Authorization = "Bearer $token" }
 $api = $BaseUrl.TrimEnd('/') + "/api/v1"
 $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
-$evidenceDir = Join-Path ([IO.Path]::GetFullPath((Join-Path $ProjectRoot $EvidenceRoot))) $stamp
+$resolvedEvidenceRoot = if ([IO.Path]::IsPathRooted($EvidenceRoot)) {
+    [IO.Path]::GetFullPath($EvidenceRoot)
+}
+else {
+    [IO.Path]::GetFullPath((Join-Path $ProjectRoot $EvidenceRoot))
+}
+$evidenceDir = Join-Path $resolvedEvidenceRoot $stamp
 New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
 $samplesPath = Join-Path $evidenceDir "samples.jsonl"
 $summaryPath = Join-Path $evidenceDir "summary.json"
@@ -228,7 +235,7 @@ try {
                  [int]$hub.reconnect_count -ne $baselineHubReconnectCount)) {
                 $sampleViolations.Add("hub_reconnected_during_steady_soak")
             }
-            if ($hub -and
+            if (-not $RequireCameraPipelineSubscriber -and $hub -and
                 [int]$hub.subscriber_types.camera_task -lt 1) {
                 $sampleViolations.Add("camera_task_subscriber_missing")
             }
@@ -236,6 +243,16 @@ try {
                 (-not $hub -or
                  [int]$hub.subscriber_types.people_flow -lt 1)) {
                 $sampleViolations.Add("people_flow_subscriber_missing")
+            }
+            if ($RequireCameraPipelineSubscriber -and
+                (-not $hub -or
+                 [int]$hub.subscriber_types.camera_pipeline -lt 1)) {
+                $sampleViolations.Add("camera_pipeline_subscriber_missing")
+            }
+            if ($RequireCameraPipelineSubscriber -and $hub -and
+                ([int]$hub.subscriber_types.people_flow -ne 0 -or
+                 [int]$hub.subscriber_types.camera_task -ne 0)) {
+                $sampleViolations.Add("legacy_subscriber_present")
             }
             if ($CaptureHostTelemetry) {
                 try {

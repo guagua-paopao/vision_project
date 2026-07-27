@@ -4,6 +4,7 @@ param(
     [string]$ApiBase = "http://127.0.0.1:8087/api/v1",
     [string]$CameraProfile = "entry_camera_01",
     [int]$WaitSeconds = 90,
+    [switch]$RequireUnifiedCameraPipeline,
     [string]$EvidenceDir = ""
 )
 
@@ -65,6 +66,19 @@ function Read-Json([object]$Response) {
     return $Response.Content | ConvertFrom-Json
 }
 
+function Test-SubscriberContract([object]$Hub) {
+    if (-not $Hub -or -not $Hub.subscriber_types) {
+        return $false
+    }
+    if ($RequireUnifiedCameraPipeline) {
+        return [int]$Hub.subscriber_types.camera_pipeline -ge 1 -and
+            [int]$Hub.subscriber_types.people_flow -eq 0 -and
+            [int]$Hub.subscriber_types.camera_task -eq 0
+    }
+    return [int]$Hub.subscriber_types.people_flow -ge 1 -and
+        [int]$Hub.subscriber_types.camera_task -ge 1
+}
+
 try {
     if (-not (Test-Path -LiteralPath $pidFile -PathType Leaf)) {
         throw "Demo PID manifest is missing."
@@ -110,16 +124,14 @@ try {
             Invoke-Api -Method GET -Path "/cameras/$cameraId/status")
         if ($before.status -eq "running" -and
             $before.pipeline.thread_running -and
-            $before.hub.subscriber_types.people_flow -ge 1 -and
-            $before.hub.subscriber_types.camera_task -ge 1) {
+            (Test-SubscriberContract $before.hub)) {
             break
         }
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $deadline)
     if ($before.status -ne "running" -or
-        $before.hub.subscriber_types.people_flow -lt 1 -or
-        $before.hub.subscriber_types.camera_task -lt 1) {
-        throw "Reconnect exercise did not establish both shared-Hub subscribers."
+        -not (Test-SubscriberContract $before.hub)) {
+        throw "Reconnect exercise did not establish the expected shared-Hub subscriber contract."
     }
 
     $manifest = Get-Content -LiteralPath $pidFile -Raw -Encoding UTF8 |
@@ -153,8 +165,7 @@ try {
             $after.hub.reconnect_count -ge
                 ($before.hub.reconnect_count + 1) -and
             $after.hub.latest_sequence -gt $before.hub.latest_sequence -and
-            $after.hub.subscriber_types.people_flow -ge 1 -and
-            $after.hub.subscriber_types.camera_task -ge 1) {
+            (Test-SubscriberContract $after.hub)) {
             $recovered = $true
             break
         }
@@ -175,6 +186,12 @@ try {
         reconnect_count_after = $after.hub.reconnect_count
         source_sequence_before = $before.hub.latest_sequence
         source_sequence_after = $after.hub.latest_sequence
+        runtime_mode = if ($RequireUnifiedCameraPipeline) {
+            "unified_camera_pipeline"
+        }
+        else {
+            "legacy_split"
+        }
         subscribers_after = $after.hub.subscriber_types
     } | ConvertTo-Json -Depth 8 |
         Set-Content -LiteralPath (

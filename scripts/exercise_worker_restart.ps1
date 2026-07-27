@@ -158,6 +158,16 @@ try {
         throw "Forced Worker exit left an orphan FFmpeg process."
     }
 
+    $workerConfigText = Get-Content -LiteralPath (
+        [string]$manifest.worker_config) -Raw -Encoding UTF8
+    $leaseTtlSeconds = 30
+    if ($workerConfigText -match
+        '(?m)^  lease_ttl_seconds:\s*(\d+)\s*$') {
+        $leaseTtlSeconds = [Math]::Max(5, [int]$Matches[1])
+    }
+    $leaseWaitSeconds = $leaseTtlSeconds + 2
+    Start-Sleep -Seconds $leaseWaitSeconds
+
     $workerExe = Join-Path (
         [IO.Path]::GetFullPath((Join-Path $ProjectRoot $BuildDir))
     ) "four_stage_worker.exe"
@@ -242,6 +252,7 @@ try {
         new_run_id = $status.run_id
         old_run_status = $oldRun.status
         old_run_error_code = $oldRun.error_code
+        process_lease_wait_seconds = $leaseWaitSeconds
         recovered_at_ms = $ready.algorithm_runtime_generated_at_ms
         runtime_mode = $ready.expected_runtime_mode
         worker_generation = @($ready.workers |
