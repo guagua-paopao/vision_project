@@ -6,6 +6,7 @@ param(
     [double]$DurationMinutes = 5,
     [int]$RtspSmokeSeconds = 15,
     [int]$StressCameraCount = 3,
+    [string]$ReportRoot = ".\reports\r7",
     [string]$LocalRtspFixture = ".\out\tmp\r7_rtsp\bus.jpg",
     [string]$MediaMtxImage = "bluenviron/mediamtx:1.18.2",
     [switch]$SkipBuild,
@@ -20,7 +21,13 @@ if ($DurationMinutes -le 0) {
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $ProjectRoot
 $stamp = [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssZ")
-$evidenceRoot = Join-Path $ProjectRoot "reports\r7\$stamp"
+$resolvedReportRoot = if ([IO.Path]::IsPathRooted($ReportRoot)) {
+    [IO.Path]::GetFullPath($ReportRoot)
+}
+else {
+    [IO.Path]::GetFullPath((Join-Path $ProjectRoot $ReportRoot))
+}
+$evidenceRoot = Join-Path $resolvedReportRoot $stamp
 New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
 
 $processPath = [Environment]::GetEnvironmentVariable("Path", "Process")
@@ -230,8 +237,7 @@ try {
         CallbackProfile = "backend_primary"
         DurationMinutes = $DurationMinutes
         RtspSmokeSeconds = $RtspSmokeSeconds
-        EvidenceRoot = (
-            "reports\r7\$stamp\hardware")
+        EvidenceRoot = (Join-Path $evidenceRoot "hardware")
         UnifiedCameraPipeline = $true
         StressCameraCount = $StressCameraCount
     }

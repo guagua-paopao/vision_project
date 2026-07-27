@@ -48,3 +48,4 @@ The People Flow and Camera business-unification program is tracked separately:
 - [R5 unified Worker, fencing, and readiness](UNIFIED_CAMERA_R5_WORKER_UNIFICATION.md)
 - [R6 Web feature parity](UNIFIED_CAMERA_R6_WEB_PARITY.md)
 - [R7 integration and hardware acceptance](UNIFIED_CAMERA_R7_ACCEPTANCE.md)
+- [R8 release and observation](UNIFIED_CAMERA_R8_RELEASE.md)

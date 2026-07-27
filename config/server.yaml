@@ -6,8 +6,8 @@ server:
   max_body_size_mb: 2
 
 runtime:
-  # R4 is opt-in. false restores the legacy People Flow Worker.
-  unified_camera_pipeline: false
+  # R8 default. Set false to restore the retained legacy People Flow Worker.
+  unified_camera_pipeline: true
   people_flow_compatibility: true
   legacy_people_flow_fallback: true
   shadow_compare: false

@@ -5,8 +5,8 @@ server:
   enable_sync_detect: false
 
 runtime:
-  # Server and Worker must use the same value.
-  unified_camera_pipeline: false
+  # R8 default. Server and Worker must use the same value.
+  unified_camera_pipeline: true
   people_flow_compatibility: true
   legacy_people_flow_fallback: true
   shadow_compare: false
