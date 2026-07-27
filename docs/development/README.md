@@ -47,3 +47,4 @@ The People Flow and Camera business-unification program is tracked separately:
 - [R4 People Flow compatibility controller](UNIFIED_CAMERA_R4_COMPATIBILITY_CONTROLLER.md)
 - [R5 unified Worker, fencing, and readiness](UNIFIED_CAMERA_R5_WORKER_UNIFICATION.md)
 - [R6 Web feature parity](UNIFIED_CAMERA_R6_WEB_PARITY.md)
+- [R7 integration and hardware acceptance](UNIFIED_CAMERA_R7_ACCEPTANCE.md)

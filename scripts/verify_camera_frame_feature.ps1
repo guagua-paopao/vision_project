@@ -126,7 +126,10 @@ foreach ($script in @(
     'exercise_worker_restart.ps1',
     'exercise_rtsp_reconnect.ps1',
     'exercise_dead_letter_replay.ps1',
-    'verify_algorithm_service_p6.ps1'
+    'exercise_multi_camera_stress.ps1',
+    'exercise_runtime_mode_rollback.ps1',
+    'verify_algorithm_service_p6.ps1',
+    'verify_unified_camera_pipeline.ps1'
 )) {
     $path = Join-Path (Join-Path $ProjectRoot 'scripts') $script
     $tokens = $null
@@ -143,6 +146,8 @@ foreach ($soakMarker in @(
     "hub_instance_changed",
     "hub_reconnected_during_steady_soak",
     "camera_task_subscriber_missing",
+    "camera_pipeline_subscriber_missing",
+    "legacy_subscriber_present",
     "CaptureHostTelemetry"
 )) {
     if (-not $soak.Contains($soakMarker)) {
@@ -242,6 +247,9 @@ foreach ($contractMarker in @(
     "exercise_worker_restart.ps1",
     "exercise_rtsp_reconnect.ps1",
     "exercise_dead_letter_replay.ps1",
+    "exercise_multi_camera_stress.ps1",
+    "exercise_runtime_mode_rollback.ps1",
+    "UnifiedCameraPipeline",
     "disposable_infrastructure_removed"
 )) {
     if (-not $p6Script.Contains($contractMarker)) {
