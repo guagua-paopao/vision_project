@@ -196,11 +196,11 @@ namespace yolo11_server {
         };
     };
 
-    // People Flow -> Camera Run migration switches. Defaults deliberately keep
-    // the legacy runtime active so a deployment can roll back without changing
-    // its database or public API.
+    // People Flow -> Camera Run migration switches. R8 makes the unified
+    // runtime the default; false retains the release-cycle rollback path
+    // without changing the database or public API.
     struct RuntimeSection {
-        bool unified_camera_pipeline = false;
+        bool unified_camera_pipeline = true;
         bool people_flow_compatibility = true;
         bool legacy_people_flow_fallback = true;
         bool shadow_compare = false;

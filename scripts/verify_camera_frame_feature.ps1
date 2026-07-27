@@ -129,7 +129,8 @@ foreach ($script in @(
     'exercise_multi_camera_stress.ps1',
     'exercise_runtime_mode_rollback.ps1',
     'verify_algorithm_service_p6.ps1',
-    'verify_unified_camera_pipeline.ps1'
+    'verify_unified_camera_pipeline.ps1',
+    'verify_unified_camera_release.ps1'
 )) {
     $path = Join-Path (Join-Path $ProjectRoot 'scripts') $script
     $tokens = $null
@@ -258,6 +259,32 @@ foreach ($contractMarker in @(
 }
 if ($p6Script -match '(?i)rtsp[s]?://[^*{\s]+:[^@{\s]+@') {
     throw "P6 acceptance script must not contain embedded RTSP credentials"
+}
+$r8Script = Get-Content -LiteralPath (
+    Join-Path $ProjectRoot "scripts\verify_unified_camera_release.ps1"
+) -Raw -Encoding UTF8
+foreach ($releaseMarker in @(
+    "single_camera_trial",
+    "expansion_camera_count",
+    "sample_error_rate",
+    "legacy_switch_retained",
+    "rtsp_uri_persisted"
+)) {
+    if (-not $r8Script.Contains($releaseMarker)) {
+        throw "R8 release guard is missing: $releaseMarker"
+    }
+}
+foreach ($configPath in @("config\server.yaml", "config\worker.yaml")) {
+    $releaseConfig = Get-Content -LiteralPath (
+        Join-Path $ProjectRoot $configPath) -Raw -Encoding UTF8
+    if ($releaseConfig -notmatch
+        '(?m)^  unified_camera_pipeline:\s*true\s*$') {
+        throw "R8 unified runtime must be the default in $configPath"
+    }
+    if ($releaseConfig -notmatch
+        '(?m)^  legacy_people_flow_fallback:\s*true\s*$') {
+        throw "R8 legacy fallback must remain available in $configPath"
+    }
 }
 $deadLetterExercise = Get-Content -LiteralPath (
     Join-Path $ProjectRoot "scripts\exercise_dead_letter_replay.ps1"

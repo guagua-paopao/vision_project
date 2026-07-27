@@ -21,6 +21,12 @@ int main(int argc, char** argv) {
     using namespace yolo11_server;
     require(argc == 3, "server and worker YAML paths are required");
 
+    const AppConfig defaults{};
+    require(defaults.runtime.unified_camera_pipeline &&
+            defaults.runtime.people_flow_compatibility &&
+            defaults.runtime.legacy_people_flow_fallback,
+        "R8 compiled defaults must prefer unified and retain rollback");
+
     const auto server = AppConfig::loadFromYaml(argv[1]);
     require(server.server.host == "127.0.0.1" && server.server.port == 8087,
         "server YAML must be read instead of silently falling back to defaults");
@@ -38,11 +44,11 @@ int main(int argc, char** argv) {
                     "security", "temporal_action"
                 }),
         "server fixed inference-pool configuration must parse");
-    require(!server.runtime.unified_camera_pipeline &&
+    require(server.runtime.unified_camera_pipeline &&
             server.runtime.people_flow_compatibility &&
             server.runtime.legacy_people_flow_fallback &&
             !server.runtime.shadow_compare,
-        "server R4 migration switches must retain the rollback-safe baseline");
+        "server R8 runtime must default to unified while retaining rollback");
     require(!server.callbacks.enabled &&
             server.callbacks.poll_interval_ms == 250 &&
             server.callbacks.request_timeout_ms == 5000 &&

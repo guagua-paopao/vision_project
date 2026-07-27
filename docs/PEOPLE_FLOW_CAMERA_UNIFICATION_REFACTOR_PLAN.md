@@ -938,6 +938,10 @@ runtime:
   shadow_compare: false
 ```
 
+R8 发布门禁通过后，Server 与 Worker 的交付配置将
+`unified_camera_pipeline` 同步改为 `true`；`false` 继续保留为至少一个
+发布观察周期内的快速回滚值，不删除旧实现或兼容配置。
+
 ### 12.2 配置映射
 
 统一模式启用时：
