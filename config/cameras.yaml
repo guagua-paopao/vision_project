@@ -4,6 +4,13 @@ cameras:
   entry_camera_01:
     source_type: "rtsp"
     url_env: "YOLO11_CAMERA_ENTRY_URL"
-    display_name: "Main Entrance"
+    display_name: "Camera 192.168.45.22"
+    transport: "tcp"
+    enabled: true
+
+  entry_camera_02:
+    source_type: "rtsp"
+    url_env: "YOLO11_CAMERA_ENTRY_02_URL"
+    display_name: "Camera 192.168.45.21"
     transport: "tcp"
     enabled: true

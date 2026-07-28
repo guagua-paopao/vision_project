@@ -53,9 +53,10 @@ struct CameraInferencePoolSnapshot {
 using CameraModelRunnerFactory =
     std::function<std::unique_ptr<IModelRunner>(int worker_id)>;
 
-// Startup-fixed, sharded inference pool. Each worker owns one model runner.
-// A camera is assigned to one shard for its lifetime, and each camera has at
-// most one pending latest-only job in addition to an in-flight inference.
+// Startup-fixed, load-balanced inference pool. Each worker owns one model
+// runner. A camera is assigned to the least-loaded shard on first submission
+// and retains that affinity until detach. Each camera has at most one pending
+// latest-only job in addition to an in-flight inference.
 class CameraInferencePool final : public ICameraFrameJobSink {
 public:
     CameraInferencePool(
@@ -106,7 +107,14 @@ private:
         std::thread thread;
     };
 
-    std::size_t shardIndex(const std::string& task_id) const noexcept;
+    std::size_t assignShard(const std::string& task_id);
+    bool findAssignedShard(
+        const std::string& task_id,
+        std::size_t& shard_index) const noexcept;
+    void releaseShard(
+        const std::string& task_id,
+        std::size_t shard_index) noexcept;
+    void clearShardAssignments() noexcept;
     void workerLoop(WorkerShard& shard) noexcept;
     void reportStartup(bool success, const std::string& error);
     void stopWorkersNoexcept() noexcept;
@@ -122,6 +130,10 @@ private:
     std::atomic<long long> processed_jobs_{ 0 };
     std::atomic<long long> failed_jobs_{ 0 };
     std::atomic<long long> stale_results_{ 0 };
+    mutable std::mutex assignment_mutex_;
+    std::map<std::string, std::size_t> shard_assignments_;
+    std::vector<std::size_t> shard_assignment_loads_;
+    std::size_t next_assignment_shard_ = 0;
     std::mutex startup_mutex_;
     std::condition_variable startup_cv_;
     int startup_reported_ = 0;

@@ -244,6 +244,58 @@ int main() {
     require(!pool.running() && runner_state->released.load() == 2,
         "shutdown must join workers and release exactly W runners");
 
+    auto balanced_runner_state = std::make_shared<RunnerState>();
+    auto balanced_handler = std::make_shared<RecordingHandler>();
+    CameraInferencePool balanced_pool(
+        config,
+        [balanced_runner_state](int) {
+            return std::make_unique<FakeRunner>(balanced_runner_state);
+        },
+        balanced_handler);
+    require(balanced_pool.start(error),
+        "load-balanced inference pool must start: " + error);
+    require(balanced_pool.submitLatest(
+            job("1", "run_1", 1), submit, error),
+        "first formerly colliding camera must be accepted");
+    require(balanced_pool.submitLatest(
+            job("1dsa", "run_1dsa", 1), submit, error),
+        "second formerly colliding camera must be accepted");
+    require(waitUntil([&]() {
+        return balanced_handler->workers("1").size() == 1 &&
+            balanced_handler->workers("1dsa").size() == 1;
+    }), "both formerly colliding cameras must be processed");
+    require(
+        balanced_handler->workers("1").front() !=
+            balanced_handler->workers("1dsa").front(),
+        "least-loaded assignment must spread two cameras across two workers");
+    require(balanced_pool.submitLatest(
+            job("1", "run_1", 2), submit, error),
+        "follow-up camera job must be accepted");
+    require(waitUntil([&]() {
+        return balanced_handler->workers("1").size() == 2;
+    }), "follow-up camera job must be processed");
+    require(
+        balanced_handler->workers("1").front() ==
+            balanced_handler->workers("1").back(),
+        "load balancing must preserve camera worker affinity");
+    const int released_worker = balanced_handler->workers("1").front();
+    balanced_pool.detachCamera("1", "run_1");
+    require(balanced_handler->detached("1", "run_1"),
+        "detaching a balanced camera must notify the result handler");
+    require(balanced_pool.submitLatest(
+            job("camera_replacement", "run_replacement", 1), submit, error),
+        "replacement camera must be accepted after detach");
+    require(waitUntil([&]() {
+        return balanced_handler->workers("camera_replacement").size() == 1;
+    }), "replacement camera must be processed");
+    require(
+        balanced_handler->workers("camera_replacement").front() ==
+            released_worker,
+        "detach must release the shard assignment for reuse");
+    balanced_pool.stop();
+    require(balanced_runner_state->released.load() == 2,
+        "balanced pool shutdown must release both runners");
+
     auto failed_runner_state = std::make_shared<RunnerState>();
     auto failed_handler = std::make_shared<RecordingHandler>();
     CameraInferencePool failed_pool(

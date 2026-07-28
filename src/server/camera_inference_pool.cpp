@@ -48,6 +48,13 @@ bool CameraInferencePool::start(std::string& error) {
     workers_ready_.store(0);
     const int worker_count = std::clamp(config_.analysis.inference_workers, 1, 16);
     try {
+        {
+            std::lock_guard<std::mutex> lock(assignment_mutex_);
+            shard_assignments_.clear();
+            shard_assignment_loads_.assign(
+                static_cast<std::size_t>(worker_count), 0);
+            next_assignment_shard_ = 0;
+        }
         shards_.reserve(static_cast<std::size_t>(worker_count));
         for (int worker_id = 0; worker_id < worker_count; ++worker_id) {
             shards_.push_back(std::make_unique<WorkerShard>(worker_id));
@@ -114,19 +121,86 @@ void CameraInferencePool::stop() noexcept {
     catch (...) {
     }
     stopWorkersNoexcept();
+    clearShardAssignments();
 }
 
 bool CameraInferencePool::running() const {
     return running_.load();
 }
 
-std::size_t CameraInferencePool::shardIndex(const std::string& task_id) const noexcept {
-    std::uint64_t hash = 1469598103934665603ULL;
-    for (const unsigned char value : task_id) {
-        hash ^= value;
-        hash *= 1099511628211ULL;
+std::size_t CameraInferencePool::assignShard(const std::string& task_id) {
+    std::lock_guard<std::mutex> lock(assignment_mutex_);
+    const auto existing = shard_assignments_.find(task_id);
+    if (existing != shard_assignments_.end()) return existing->second;
+    if (shard_assignment_loads_.empty()) return 0;
+
+    const auto minimum = *std::min_element(
+        shard_assignment_loads_.begin(), shard_assignment_loads_.end());
+    std::size_t selected = 0;
+    for (std::size_t offset = 0;
+         offset < shard_assignment_loads_.size();
+         ++offset) {
+        const std::size_t candidate =
+            (next_assignment_shard_ + offset) %
+            shard_assignment_loads_.size();
+        if (shard_assignment_loads_[candidate] == minimum) {
+            selected = candidate;
+            break;
+        }
     }
-    return shards_.empty() ? 0 : static_cast<std::size_t>(hash % shards_.size());
+    shard_assignments_.emplace(task_id, selected);
+    ++shard_assignment_loads_[selected];
+    next_assignment_shard_ =
+        (selected + 1) % shard_assignment_loads_.size();
+    return selected;
+}
+
+bool CameraInferencePool::findAssignedShard(
+    const std::string& task_id,
+    std::size_t& shard_index
+) const noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(assignment_mutex_);
+        const auto found = shard_assignments_.find(task_id);
+        if (found == shard_assignments_.end()) return false;
+        shard_index = found->second;
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+void CameraInferencePool::releaseShard(
+    const std::string& task_id,
+    std::size_t shard_index
+) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(assignment_mutex_);
+        const auto found = shard_assignments_.find(task_id);
+        if (found == shard_assignments_.end() ||
+            found->second != shard_index) {
+            return;
+        }
+        shard_assignments_.erase(found);
+        if (shard_index < shard_assignment_loads_.size() &&
+            shard_assignment_loads_[shard_index] > 0) {
+            --shard_assignment_loads_[shard_index];
+        }
+    }
+    catch (...) {
+    }
+}
+
+void CameraInferencePool::clearShardAssignments() noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(assignment_mutex_);
+        shard_assignments_.clear();
+        shard_assignment_loads_.clear();
+        next_assignment_shard_ = 0;
+    }
+    catch (...) {
+    }
 }
 
 bool CameraInferencePool::submitLatest(
@@ -147,7 +221,12 @@ bool CameraInferencePool::submitLatest(
         return false;
     }
 
-    auto& shard = *shards_[shardIndex(job.task_id)];
+    const std::size_t shard_index = assignShard(job.task_id);
+    if (shard_index >= shards_.size()) {
+        error = "ANALYSIS_POOL_ASSIGNMENT_INVALID";
+        return false;
+    }
+    auto& shard = *shards_[shard_index];
     {
         std::lock_guard<std::mutex> lock(shard.mutex);
         if (shard.stop_requested || !running_.load()) {
@@ -196,7 +275,12 @@ void CameraInferencePool::detachCamera(
 ) noexcept {
     if (task_id.empty() || run_id.empty() || shards_.empty()) return;
     try {
-        auto& shard = *shards_[shardIndex(task_id)];
+        std::size_t shard_index = 0;
+        if (!findAssignedShard(task_id, shard_index) ||
+            shard_index >= shards_.size()) {
+            return;
+        }
+        auto& shard = *shards_[shard_index];
         bool detached = false;
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
@@ -211,7 +295,10 @@ void CameraInferencePool::detachCamera(
                 detached = true;
             }
         }
-        if (detached) result_handler_->detachCamera(task_id, run_id);
+        if (detached) {
+            releaseShard(task_id, shard_index);
+            result_handler_->detachCamera(task_id, run_id);
+        }
     }
     catch (...) {
     }
@@ -356,6 +443,7 @@ void CameraInferencePool::stopWorkersNoexcept() noexcept {
     }
     shards_.clear();
     workers_ready_.store(0);
+    clearShardAssignments();
 }
 
 }  // namespace yolo11_server

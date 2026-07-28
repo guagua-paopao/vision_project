@@ -403,6 +403,15 @@ add_custom_command(TARGET pose_engine_smoke POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:myplugins> $<TARGET_FILE_DIR:pose_engine_smoke>)
 
+# Hardware benchmark; excluded from CTest because it requires an NVIDIA GPU.
+add_executable(pose_engine_benchmark tests/pose_engine_benchmark.cpp)
+target_include_directories(pose_engine_benchmark PRIVATE "${PROJECT_INCLUDE_DIR}")
+target_link_libraries(pose_engine_benchmark PRIVATE pose_runtime myplugins ${OpenCV_LIBS})
+add_dependencies(pose_engine_benchmark myplugins)
+add_custom_command(TARGET pose_engine_benchmark POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:myplugins> $<TARGET_FILE_DIR:pose_engine_benchmark>)
+
 # Real-RTSP smoke target; intentionally not part of CTest because it requires
 # a reachable camera and its URI must be supplied through the configured env.
 add_executable(rtsp_capture_smoke tests/rtsp_capture_smoke.cpp)

@@ -84,7 +84,8 @@ $build = @("--build", $BuildPath, "--config", "Release", "--target",
     "camera_frame_extraction_test", "camera_storage_policy_test", "camera_frame_resilience_test",
     "camera_task_http_contract_test",
     "people_flow_compatibility_contract_test",
-    "pose_engine_smoke", "rtsp_capture_smoke", "pose_rtsp_interop_smoke")
+    "pose_engine_smoke", "pose_engine_benchmark",
+    "rtsp_capture_smoke", "pose_rtsp_interop_smoke")
 if ($CleanFirst) { $build += "--clean-first" }
 & $CMakeExe @build
 if ($LASTEXITCODE -ne 0) { throw "Backend build failed" }
